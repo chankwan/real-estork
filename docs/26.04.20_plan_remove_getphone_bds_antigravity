@@ -1,0 +1,99 @@
+# Tăng tốc Batdongsan Crawl — Bỏ Phone Pipeline
+
+## Bối cảnh
+
+Người dùng đã bỏ ý định lấy số điện thoại từ batdongsan. Hiện tại pipeline vẫn có nhiều bước thiết kế xung quanh phone, gây chậm không cần thiết.
+
+---
+
+## Bottleneck liên quan đến phone (cần xóa/giản lược)
+
+| Bước | File | Tác động tốc độ | Ghi chú |
+|------|------|-----------------|---------|
+| **`wait=8000`** trong `_stealth_fetch` | `batdongsan.py:528` | **Lớn nhất** | 8 giây/page chờ network idle — ban đầu để JS load nút "Xem số". Không cần phone → giảm xuống 3s |
+| **Cookie injection** vào StealthyFetcher | `batdongsan.py:529` | Trung bình | Cookies (accessToken) chỉ cần cho DecryptPhone API — không cần cho page rendering public |
+| **`_build_cookies()`** | `batdongsan.py:514` | Nhỏ | Load + validate cookies file mỗi cycle |
+| **`_fetch_phones_batch()`** | `batdongsan.py:472` | Nhỏ (đã no-op) | `_raw_phone` không bao giờ được set nên đã không chạy, nhưng code vẫn làm phức tạp |
+| **`_check_batdongsan_cookies()`** | `orchestrator/agent.py:419` | Nhỏ | Check + trigger headless refresh cookies — không cần nếu không có auth |
+| **`bds_auth_client` injection** | `orchestrator/agent.py:326` | Nhỏ | Inject auth client để đồng bộ session state cho phone decrypt |
+| **`BatdongsanAuthClient` init** | `orchestrator/agent.py:63` | Nhỏ | Khởi tạo auth client — hoàn toàn không cần nữa |
+
+---
+
+## Estimation tiết kiệm thời gian
+
+**Hiện tại (mỗi cycle, khoảng ~25 pages early-stop):**
+- Stage 1: 25 pages × `wait=8s` = **~200s**
+- Stage 2: 20 listings / sem=6 ≈ 4 batches × `wait=8s` = **~32s**
+- Tổng ≈ **~4 phút**
+
+**Sau khi giảm `wait=3000`:**
+- Stage 1: 25 pages × `wait=3s` = **~75s**
+- Stage 2: 4 batches × `wait=3s` = **~12s**
+- Tổng ≈ **~1.5 phút**
+
+---
+
+## Proposed Changes
+
+### [MODIFY] [batdongsan.py](file:///d:/Programming/real-estork/spiders/batdongsan.py)
+
+#### 1. `__init__`: Xóa `_cookies_list`
+```diff
+         self._fetch_impl: Any = None
+-        self._cookies_list: list[dict] | None = None
+```
+
+#### 2. `fetch_listings`: Xóa cookie setup
+```diff
+         self._fetch_impl = StealthyFetcher.fetch
+-        self._cookies_list = self._build_cookies()
+```
+
+#### 3. `_stealth_fetch`: Giảm `wait`, bỏ cookies, bỏ network_idle
+```diff
+-        kwargs: dict = dict(wait=8000, timeout=90000, network_idle=True)
+-        if self._cookies_list:
+-            kwargs["cookies"] = self._cookies_list
++        kwargs: dict = dict(wait=3000, timeout=60000, network_idle=False)
+```
+
+#### 4. Xóa toàn bộ method `_build_cookies()` và `_fetch_phones_batch()`
+
+---
+
+### [MODIFY] [orchestrator/agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py)
+
+#### 1. Xóa `BatdongsanAuthClient` import và init
+```diff
+-from auth.batdongsan_auth import BatdongsanAuthClient
+ ...
+-        self.bds_auth_client = BatdongsanAuthClient()
+```
+
+#### 2. Xóa auth injection trong `_run_batdongsan_cycle_inner`
+```diff
+         spider.seen_ids = set(self.dedup.seen_source_ids)
+-        spider.bds_auth_client = self.bds_auth_client
+```
+
+#### 3. Xóa `_check_batdongsan_cookies()` call và method
+
+---
+
+## User Review Required
+
+> [!WARNING]
+> **`wait=3000` có thể quá nhanh cho detail pages.** Nếu BDS render `contact_name` / `poster_total_listings` bằng JS lazy-load, giảm wait sẽ làm mất data phân loại chính chủ/broker. Cần kiểm tra sau khi deploy bằng cách xem log có `contact_name` và `poster_total_listings` được fill không.
+> Nếu thiếu data, tăng lên `wait=4000` hoặc `wait=5000`.
+
+> [!NOTE]
+> `network_idle=False` tắt chờ network hoàn toàn idle, chỉ dùng timeout `wait` ms. Phù hợp khi BDS renders nội dung cần thiết trong static HTML (không phải JS lazy). Contact name và poster count đều nằm trong static HTML theo discovery sessions trước.
+
+---
+
+## Verification Plan
+
+- Log thời gian cycle: `─── Batdongsan cycle done: ... Xs ───`
+- Xem rate `contact_name` và `poster_total_listings` có đủ fill sau khi giảm wait
+- Nếu cần: tăng `wait` từng bước 1000ms cho đến khi data ổn định

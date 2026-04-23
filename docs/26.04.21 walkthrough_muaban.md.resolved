@@ -1,0 +1,36 @@
+# Muaban Spider & Batdongsan Optimization Walkthrough
+
+I have successfully implemented the `muaban.net` spider and optimized the `batdongsan.com.vn` crawl logic to ensure full coverage of today's listings.
+
+## Changes Made
+
+### 1. Muaban Spider (`muaban.py`)
+- **JSON Extraction**: Implemented SSR extraction from `__NEXT_DATA__`, similar to `nhatot`. This captures full listing details (including high-quality broker signals) in a single request.
+- **VIP Logic**: Mapped `service_ids` (16, 8, 4) to `is_vip`. The spider continues scanning through pinned VIPs and only stops when it hits a "Normal" listing from "Yesterday".
+- **Broker Detection**: Captures `is_company` and `user_id` for accurate classification and same-account listing counts.
+- **URL**: Targeted the high-value commercial rental URL: `https://muaban.net/bat-dong-san/cho-thue-van-phong-mat-bang-ho-chi-minh?sort=1&price=15000000-1000000000`.
+
+### 2. Batdongsan Optimization
+- **Unlimited Crawl**: Removed the strict `max_pages` limit (now handles up to 100 pages) to ensure the spider doesn't stop until it has processed all listings from "Today".
+
+### 3. Orchestrator Integration
+- **Token Expiry Alert**: Added a check in the orchestrator to notify the admin via Telegram when the Muaban session/token expires, prompting a manual re-login.
+
+## Verification Results
+
+### Muaban Spider Test
+I ran a scratch test on `MuabanSpider` which confirmed:
+- Successful bypass of Cloudflare via `StealthyFetcher`.
+- Correct parsing of 20 listings from the first page.
+- Identification of VIP listings (e.g., ID `70796157`).
+- Correct early-stop behavior when encountering non-today normal listings.
+
+```log
+2026-04-21 22:31:22.331 | INFO     | spiders.muaban:fetch_listings:113 - [muaban] Page 1: parsed=20, dedup_hit=0, non_today=11
+2026-04-21 22:31:22.331 | INFO     | spiders.muaban:fetch_listings:136 - [muaban] Early-stop: non-today normal listing detected on page 1
+2026-04-21 22:31:22.331 | INFO     | spiders.muaban:fetch_listings:145 - [muaban] Total listings: 20
+```
+
+## Next Steps
+- **Manual Login**: Ensure you have performed the initial Google login for Muaban to enable phone extraction (similar to Nhà Tốt).
+- **Monitor Telegram**: Keep an eye on the admin chat for session expiry notifications.

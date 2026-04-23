@@ -1,0 +1,62 @@
+version: "3.8"
+
+services:
+  # =====================================================
+  # changedetection.io — Quick backup monitor
+  # Ngày 1: Deploy cái này → vợ có alert ngay hôm nay
+  # (dùng tạm trong khi spiders đang build)
+  # =====================================================
+  changedetection:
+    image: ghcr.io/dgtlmoon/changedetection.io
+    container_name: realestork_changedetection
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - changedetection_data:/datastore
+    environment:
+      - PLAYWRIGHT_DRIVER_URL=ws://playwright-chrome:3000/?stealth=1&--disable-web-security=true
+    depends_on:
+      - playwright-chrome
+
+  playwright-chrome:
+    image: dgtlmoon/sockpuppetbrowser:latest
+    container_name: realestork_playwright
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+
+  # =====================================================
+  # openclaw-zero-token — AI Tier 1 (Free web chat gateway)
+  # Provides OpenAI-compatible API at localhost:3001/v1
+  # Models: DeepSeek Web, Qwen Web, Gemini Web, etc.
+  # Setup: docker exec -it realestork_openclaw sh -c "npx openclaw login"
+  # =====================================================
+  openclaw:
+    image: node:20-alpine
+    container_name: realestork_openclaw
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    working_dir: /app
+    command: >
+      sh -c "npm install -g openclaw-zero-token && openclaw serve --port 3001"
+    volumes:
+      - openclaw_data:/app/.openclaw
+    environment:
+      - OPENCLAW_PORT=3001
+
+volumes:
+  changedetection_data:
+  openclaw_data:
+
+# =====================================================
+# Commands:
+#   Start all:     docker-compose up -d
+#   Logs:          docker-compose logs -f changedetection
+#   openclaw login: docker exec -it realestork_openclaw npx openclaw login
+#   changedetection UI: http://localhost:5000
+# =====================================================

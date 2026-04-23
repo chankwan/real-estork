@@ -1,0 +1,53 @@
+# RealEstork — Muaban-specific Scoring
+# Strategy: Focus on profile transparency (avatar, total listings) and name patterns.
+
+base_score: 50
+threshold_chinh_chu: 65
+threshold_can_xac_minh: 40
+
+signals:
+  # Overrides for default signals
+  account_type_personal:
+    weight: 0    # is_company=false is unreliable on Muaban
+
+  text_owner_language:
+    weight: -5   # Brokers claim this often
+
+  # Muaban-specific Profile Signals
+  muaban_multi_active_listings:
+    weight: -40  # >= 5 listings = Broker per user instruction
+  
+  muaban_few_active_listings:
+    weight: +20  # < 5 listings = Owner candidate
+
+  avatar_is_blank:
+    weight: +15  # Blank avatar = typical owner
+
+  account_name_is_phone:
+    weight: +20  # Name is phone number = strong owner signal
+
+  listing_is_vip:
+    weight: -10  # Mild broker signal
+
+  # Time-based signals (critical: muaban chỉ crawl trong 24h nên luôn có data)
+  listing_very_fresh:
+    weight: +10   # <= 2h: instant priority
+
+  listing_fresh:
+    weight: +5    # 2h < age <= 24h: standard fresh
+
+  listing_stale:
+    weight: -15   # > 7 ngày (phòng trường hợp VIP pin lâu)
+
+  # Other default signals to keep
+  account_name_broker_keywords:
+    weight: -30
+
+  same_session_multi_listing:
+    weight: -20   # >2 tin cùng account trong batch = broker
+
+  description_no_diacritics:
+    weight: +15
+
+  text_marketing_superlatives:
+    weight: -20

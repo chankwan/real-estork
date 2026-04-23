@@ -1,0 +1,81 @@
+# RealEstork — .gitignore
+
+# === Secrets (NEVER commit these) ===
+.env
+*.env.local
+config/proxy.yaml
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# === Virtual environments ===
+venv/
+env/
+.venv/
+ENV/
+
+# === Logs ===
+logs/
+*.log
+*.log.*
+
+# === Testing ===
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# === IDEs ===
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Docker ===
+docker-compose.override.yml
+
+# === Database / Data exports ===
+*.db
+*.sqlite
+exports/
+data/raw/
+
+# === Scrapling browser data ===
+camoufox-profile/
+browser-profiles/
+
+# === Nhatot auth (browser profile with Google session) ===
+.nhatot_browser_profile/
+.nhatot_session.json
+
+# === Batdongsan / Muaban auth ===
+.batdongsan_browser_profile/
+.batdongsan_cookies.json
+.muaban_browser_profile/
+.muaban_cookies.json
+
+# === Runtime files ===
+.orchestrator.lock
+
+# === Scratch / temp files ===
+scratch/
+scratch_*.txt
+scratch_*.json
+scratch_*.py
+
+# === Claude Code internal ===
+.claude/

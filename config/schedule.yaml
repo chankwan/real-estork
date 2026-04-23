@@ -1,0 +1,37 @@
+# RealEstork — Schedule Configuration
+
+schedules:
+  nhatot_cycle:
+    interval_minutes: 5          # Run every 5 minutes (nhatot API, no browser)
+    function: run_nhatot_cycle
+    enabled: true
+
+  muaban_cycle:
+    interval_minutes: 20         # Heavy volume, requires more time to crawl
+    function: run_muaban_cycle
+    enabled: true
+
+  batdongsan_cycle:
+    interval_minutes: 20         # 2-stage fetch (list → detail → lazy guru profile)
+    function: run_batdongsan_cycle
+    enabled: true
+
+  daily_digest:
+    cron: "0 8 * * *"            # 8:00 AM daily
+    function: daily_digest
+    enabled: true
+
+  weekly_analysis:
+    cron: "0 9 * * 1"            # Monday 9:00 AM
+    function: weekly_model_comparison
+    enabled: true
+
+  phone_db_cleanup:
+    cron: "0 2 * * *"            # 2:00 AM daily — purge stale phone data
+    function: cleanup_old_phone_data
+    enabled: true
+
+  feedback_analysis:
+    cron: "0 20 * * *"           # 8:00 PM daily — analyze vợ's /mark feedback
+    function: analyze_classification_feedback
+    enabled: true

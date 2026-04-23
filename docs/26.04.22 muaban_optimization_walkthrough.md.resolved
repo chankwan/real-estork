@@ -1,0 +1,59 @@
+# Walkthrough: Muaban.net Classification Optimization
+**Date**: April 22, 2026
+**Objective**: Implementing a robust broker/owner detection strategy for Muaban.net based on data audit and user insights.
+
+---
+
+## 1. The Strategy: "Behavior over Labels"
+Audit data proved that Muaban's own `is_company` label is unreliable (brokers with 50,000+ listings are labeled as personal). Our new strategy shifts focus to **actual user behavior**:
+- **Transparency**: Owners usually have blank avatars and simple names (or phone numbers as names).
+- **Volume**: Owners rarely have more than a few active listings.
+- **Investment**: Owners pay for VIP less frequently than brokers, but do use it occasionally.
+
+---
+
+## 2. Component Changes
+
+### A. Core Signals (`pipeline/signals.py`)
+We added 4 new signal detectors to the engine:
+- `muaban_multi_active_listings`: Triggers if the user has **>= 5 active listings** (The Broker Veto).
+- `muaban_few_active_listings`: Triggers if the user has **< 5 active listings** (The Owner Bonus).
+- `avatar_is_blank`: Detects default/placeholder profile pictures.
+- `account_name_is_phone`: Detects users who use their raw phone number as their display name.
+
+### B. Scoring Logic (`config/scoring_muaban.yaml`)
+We created a source-specific override for Muaban to ensure these new signals take priority:
+- **Broker Penalties**:
+    - Multi-listing (>= 5): **-40 points**
+    - Custom Avatar: **-15 points**
+    - Known Broker Keywords: **-30 points**
+- **Owner Bonuses**:
+    - Few listings (< 5): **+20 points**
+    - Name is Phone: **+20 points**
+    - Blank Avatar: **+15 points**
+- **Neutralized**: `is_company` weight set to **0**.
+
+### C. Data Extraction (`spiders/muaban.py`)
+To feed these signals, we upgraded the Muaban spider to dig deeper into the `__NEXT_DATA__` JSON payload:
+- **`agentBrief.total`**: Extracted to get the total listing count of the user.
+- **`user.avatar`**: Extracted to check for custom profile pictures.
+- **Session Awareness**: Improved logging for HTTP 403 errors to warn you immediately if phone reveal/enrichment is blocked by a stale session.
+
+---
+
+## 3. Configuration Updates (`config/spiders.yaml`)
+- **Price Range**: Updated to `15,000,000 - 100,000,000` VND to match your target commercial rental market.
+- **Sorting**: Locked to `sort=1` (Newest) to ensure the freshest listings are processed first.
+
+---
+
+## 4. How to Verify
+1. **Logs**: Watch the `orchestrator` logs for `muaban` listings. You will see scores like `85` (Owner) or `25` (Broker) with the new signals listed in the reasoning.
+2. **Telegram**: Notifications should now be much cleaner, with fewer high-volume brokers slipping through.
+3. **Session Check**: If you see `[muaban] Session expired` in the logs, remember to run:
+   ```bash
+   python -m cli.main setup-muaban
+   ```
+
+> [!TIP]
+> The **"God Signal"** is the listing count. By setting the threshold at **5**, we are being "thoáng" (lenient) enough to catch owners with multiple properties while still blocking professional agents.

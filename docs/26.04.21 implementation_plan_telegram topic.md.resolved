@@ -1,0 +1,50 @@
+# Organization of Telegram Notifications by Topic
+
+This plan outlines the changes required to route Telegram notifications from different real estate platforms to specific topics within a Telegram group and append identifying hashtags to each message.
+
+## User Review Required
+
+> [!IMPORTANT]
+> The implementation assumes the `TELEGRAM_GROUP_CHAT_ID` refers to a Supergroup with Topics enabled.
+> Topic (Thread) IDs provided by the user:
+> - **batdongsan**: 5
+> - **nhatot**: 10
+> - **muaban**: 11
+> 
+> If these IDs change or are incorrect, the messages might fail to send or go to the wrong topics.
+
+## Proposed Changes
+
+### Notifications Component
+
+#### [MODIFY] [telegram.py](file:///d:/Programming/real-estork/notifications/telegram.py)
+- Update `send_listing_alert` method to accept an optional `message_thread_id: int | None`.
+- Pass `message_thread_id` to the `self.bot.send_message` call.
+- Update `_format_listing_message` to append a hashtag based on `listing.source` (e.g., `#batdongsan`, `#nhatot`, `#muaban`).
+
+---
+
+### Orchestrator Component
+
+#### [MODIFY] [agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py)
+- Define a topic mapping for the platforms:
+  ```python
+  TELEGRAM_TOPIC_MAP = {
+      "batdongsan": 5,
+      "nhatot": 10,
+      "muaban": 11,
+  }
+  ```
+- In `_process_listing`, determine the `message_thread_id` based on `listing.source`.
+- Only apply the `message_thread_id` when sending to the `TELEGRAM_GROUP_CHAT_ID` (admin private chat usually doesn't have topics).
+
+## Verification Plan
+
+### Manual Verification
+- Run a dry run of the orchestrator to verify the hashtags are properly appended to the formatted messages in the logs.
+- Trigger a real notification (if possible/safe) or use a test script to verify that `message_thread_id` correctly routes messages to the intended topics in a test Telegram group.
+- The user will verify if the messages appear in the correct topics:
+  - Batdongsan: Topic 5
+  - Nhatot: Topic 10
+  - Muaban: Topic 11
+  - All: Hashtags (#batdongsan, #nhatot, #muaban) should be visible.

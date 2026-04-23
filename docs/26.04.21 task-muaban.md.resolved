@@ -1,0 +1,14 @@
+# Muaban Spider & Batdongsan Optimization
+
+- [x] Update `config/spiders.yaml` (Muaban & Batdongsan config)
+- [x] Implement `MuabanSpider` in `spiders/muaban.py`
+    - [x] `fetch_listings` with `StealthyFetcher`
+    - [x] JSON extraction from `__NEXT_DATA__`
+    - [x] Date parsing for "Hôm nay", "X giờ trước"
+    - [x] VIP-aware early stop logic
+    - [x] Broker signal extraction (`is_company`, `user_id`)
+- [x] Update `spiders/batdongsan.py` (Remove/Increase max_pages)
+- [x] Update `orchestrator/agent.py` (Add Muaban expiry check & notification)
+- [x] Verification
+    - [x] Run `MuabanSpider` scratch test
+    - [x] Verify Telegram notification for expiry

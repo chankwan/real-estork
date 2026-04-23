@@ -1,0 +1,60 @@
+# Walkthrough: VIP Scanning & Telegram Dedup Implementation
+
+Dưới đây là chi tiết các thay đổi đã thực hiện để nâng cao cơ chế quét tin và tối ưu hóa thông báo.
+
+## 1. Mở rộng quét tin VIP (Batdongsan)
+
+Trước đây, tin VIP bị bỏ qua hoàn toàn để tối ưu tốc độ. Hiện tại, chúng ta đã mở lại việc quét tin VIP nhưng có cơ chế kiểm soát lỗi "not-today" để không làm bot dừng sớm.
+
+### File: [batdongsan.py](file:///d:/Programming/real-estork/spiders/batdongsan.py)
+
+- **Parse tin VIP**: Trong `_parse_list_card`, tag `is_vip=True` được thêm vào listing nếu phát hiện class VIP.
+- **VIP-aware Early-Stop**: 
+    - Nếu gặp tin VIP và là tin cũ → Bot chỉ `continue` (bỏ qua mô tả chi tiết của tin đó) nhưng **không** kích hoạt ngắt trang.
+    - Điều này giúp Bot vượt qua "vùng VIP" ở các trang đầu để tìm đầy đủ tin Thường mới nhất.
+    - **Lưu ý**: Badge "Môi giới chuyên nghiệp" vẫn bị skip cứng ở list page để lọc nhiễu broker sớm.
+
+```python
+# Logic trong fetch_listings loop
+if parsed.is_vip:
+    if parsed.posted_at is not None and not self._is_posted_today(parsed.posted_at):
+        continue  # Bỏ qua tin VIP cũ, KHÔNG break loop
+    # ... parse tin VIP hôm nay ...
+```
+
+---
+
+## 2. Chống gửi trùng Telegram (Boost Dedup)
+
+Giải quyết vấn đề tin bị người đăng "đẩy" (boost) khiến Bot nhận diện là tin mới và gửi lại vào Telegram. Cơ chế này hoạt động dựa trên Database thay vì chỉ bộ nhớ đệm (cache), giúp ổn định ngay cả khi Bot khởi động lại.
+
+### File: [agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py)
+
+Mọi listing (hệ nhatot, batdongsan, ...) giờ đây đều đi qua bước kiểm tra trạng thái thực tế trong DB:
+
+1.  **Check Status**: Trước khi làm bất cứ việc gì (Classify/OSINT), Bot hỏi DB xem listing `source:source_id` này đã có status gì chưa.
+2.  **Bảo toàn trạng thái**: Khi thực hiện `upsert_listing`, nếu tin đã có status là `alerted_*` (đã gửi alert), Bot sẽ ghi đè chính status đó lại thay vì đặt là `new`. Việc này giúp giữ nguyên lịch sử.
+3.  **Lọc trùng Alert**: Trước khi gọi Telegram gửi tin, Bot kiểm tra nếu `existing_status` bắt đầu bằng `alerted` thì sẽ log `BOOST DEDUP: skip re-alert` và dừng lại.
+
+```python
+# Check DB status ngay đầu _process_listing
+existing_status = self.db.get_listing_status(listing.source, listing.source_id)
+
+# ... Classify / OSINT ...
+
+# Ghi đè status trong listing_data trước khi Upsert
+listing_data["status"] = existing_status if existing_status and existing_status.startswith("alerted") else "new"
+
+# Chặn gửi nếu đã gửi rồi
+if existing_status and existing_status.startswith("alerted"):
+    logger.info(f"[orchestrator] BOOST DEDUP: {listing.source}/{listing.source_id} already sent")
+    return False
+```
+
+---
+
+## Giải đáp các thắc mắc:
+
+1.  **Chạy Bot lại là được?**: Đúng, bạn chỉ cần restart Bot. Mọi thay đổi code đã được áp dụng.
+2.  **Tác dụng ngay lập tức?**: Có. Cơ chế dedup mới truy vấn trực tiếp vào bảng `listings` trong Database. Bất kỳ tin nào trước đây đã được đánh dấu là `alerted` hoặc `alerted_telegram` trong Suppabase sẽ bị Bot chặn không gửi lại vào Telegram ngay từ cycle đầu tiên sau khi restart.
+3.  **Lọc bằng ID?**: Đúng như bạn yêu cầu, mình lọc bằng cặp `source + source_id` vì đây là định danh duy nhất của tin trên sàn, không thay đổi ngay cả khi tin được ping/boost.

@@ -1,0 +1,40 @@
+# Walkthrough — Telegram Notification Organization
+
+I have successfully updated the RealEstork system to route notifications to specific Telegram topics and added platform-specific hashtags to each message.
+
+## Changes Made
+
+### 1. Notifications Component
+- **[telegram.py](file:///d:/Programming/real-estork/notifications/telegram.py)**:
+    - Updated `send_listing_alert` to support the `message_thread_id` parameter.
+    - Modified `_format_listing_message` to append a platform hashtag (e.g., `#batdongsan`, `#nhatot`, `#muaban`) at the end of each message. This ensures they are easily identifiable in the "All" topic view.
+
+### 2. Orchestrator Component
+- **[agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py)**:
+    - Implemented a topic mapping for the platforms:
+        - `batdongsan` → Topic 5
+        - `nhatot` → Topic 10
+        - `muaban` → Topic 11
+    - Updated the `_process_listing` logic to determine the correct `message_thread_id` based on the listing source and pass it when sending alerts to the main Telegram group.
+
+## Verification Results
+
+### Message Formatting Test
+I verified the message formatting using a test script. The output confirmed that hashtags are correctly appended:
+
+```text
+#nhatot | nhatot-12345
+#batdongsan | batdongsan-67890
+#muaban | muaban-abcde
+```
+
+### Topic Routing Review
+- The code correctly identifies the source and applies the mapping only for the group chat (`TELEGRAM_GROUP_CHAT_ID`), ensuring that admin private alerts remain unaffected.
+
+## How to Verify
+1. Monitor your Telegram group topics.
+2. New listings should now appear in their respective topics:
+    - **batdongsan**: Topic 5
+    - **nhatot**: Topic 10
+    - **muaban**: Topic 11
+3. In the "All" view, you should see the hashtags (e.g., `#batdongsan`) at the bottom of each message.

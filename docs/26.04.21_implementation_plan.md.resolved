@@ -1,0 +1,285 @@
+# Nâng cao cơ chế quét Batdongsan + Chống gửi trùng Telegram
+
+## Tóm tắt
+
+Hai thay đổi trong cùng một lần deploy:
+
+1. **VIP-aware Early-Stop** — Parse thêm VIP cards thay vì hard-skip. Chỉ break early-stop khi gặp tin THƯỜNG not-today. VIP not-today bị bỏ qua (continue).
+
+2. **Telegram Dedup** — Khi tin bị boost/ping lại trên bất kỳ sàn nào (nhatot, batdongsan, ...), nếu đã gửi Telegram rồi → skip không gửi lại.
+
+---
+
+## Part 1: VIP-aware Early-Stop
+
+### 1. `spiders/base.py` — Thêm field `is_vip`
+
+#### [MODIFY] [base.py](file:///d:/Programming/real-estork/spiders/base.py)
+
+Thêm field `is_vip: bool = False` vào `RawListing` dataclass. Field này:
+- Được set bởi `_parse_list_card` khi detect VIP tier markers
+- Cho phép loop trong `fetch_listings` phân biệt VIP vs thường để kiểm soát early-stop
+- Có thể dùng làm scoring signal trong tương lai nếu cần
+
+```diff
+  has_pro_agent_badge: bool = False
++ is_vip: bool = False   # True nếu card có tier silver/gold/diamond
+```
+
+---
+
+### 2. `spiders/batdongsan.py` — 3 thay đổi chính
+
+#### [MODIFY] [batdongsan.py](file:///d:/Programming/real-estork/spiders/batdongsan.py)
+
+**A. Cập nhật docstring** (dòng 1–42)
+
+Sửa docstring header từ v3 → v4, mô tả lại strategy mới:
+- Bỏ dòng `Skip VIP tiers + pro-agent ở list page`
+- Thêm: parse VIP cards, skip nếu VIP + not-today (continue), chỉ break khi THƯỜNG + not-today
+
+---
+
+**B. `_parse_list_card` — Bỏ VIP hard-skip, parse VIP và tag `is_vip`** (~dòng 249–252)
+
+Xóa block:
+```python
+# Rollback: Skip VIP tier
+is_vip = any(m in card_cls for m in _VIP_TIER_MARKERS)
+if is_vip:
+    return None, "vip"
+```
+
+Thay bằng:
+```python
+# Detect VIP tier — parsed như bình thường, sẽ được xử lý ở fetch_listings loop
+is_vip = any(m in card_cls for m in _VIP_TIER_MARKERS)
+```
+
+Rồi set field trên listing trước khi return:
+```python
+listing = RawListing(
+    ...
+    has_pro_agent_badge=has_pro_agent,
+    is_vip=is_vip,   # ← THÊM
+)
+return listing, ""
+```
+
+> **Lưu ý**: Pro-agent check KHÔNG đổi — vẫn hard-skip nếu có badge, bất kể VIP hay thường.
+
+---
+
+**C. `fetch_listings` loop — VIP-aware early-stop** (~dòng 147–183)
+
+Xóa block cũ:
+```python
+if skip == "vip":
+    vip_count += 1
+    continue
+```
+
+Thay logic not-today tracking:
+
+```python
+# Dedup pre-filter
+if f"batdongsan:{parsed.source_id}" in self.seen_ids:
+    page_dedup_hit += 1
+
+# VIP not-today: bỏ qua card này nhưng KHÔNG trigger early-stop
+if parsed.is_vip:
+    if parsed.posted_at is not None and not self._is_posted_today(parsed.posted_at):
+        vip_count += 1   # vẫn đếm để log
+        continue         # skip card này, tiếp tục scan
+    vip_count += 1
+    page_parsed.append(parsed)
+    continue
+
+# Tin thường: not-today → trigger early-stop
+if parsed.posted_at is not None and not self._is_posted_today(parsed.posted_at):
+    page_non_today += 1
+page_parsed.append(parsed)
+```
+
+> Kết quả: `page_non_today` CHỈ được tăng bởi tin thường not-today. VIP not-today bị bỏ qua 
+> hoàn toàn. Early-stop break logic sau page giữ nguyên: `if page_non_today >= 1: break`.
+
+---
+
+**D. Cập nhật log** (~dòng 165–169)
+
+Cập nhật log message để phản ánh đúng số VIP (đã parse, không phải skip):
+```
+f"[batdongsan] Page {page_num}: parsed={len(page_parsed)}, "
+f"dedup_hit={page_dedup_hit}, non_today={page_non_today} "
+f"(VIP_parsed={vip_count}, pro-agent={pro_agent_count} cumulative)"
+```
+
+---
+
+## Part 2: Chống gửi trùng Telegram (Boost/Ping dedup)
+
+### Bối cảnh vấn đề
+
+Trên cả nhatot lẫn batdongsan (và các sàn tương lai), người đăng có thể "boost" / "đẩy tin" lên đầu.
+Khi boost, tin cũ xuất hiện lại ở trang đầu với `posted_at = hôm nay`. Luồng xảy ra:
+
+```
+Cycle 1: Spider crawl → Dedup pass (new) → Classify → DB upsert → Telegram ✅ gửi OK
+                                                     → status = "alerted_telegram"
+
+... User boost tin trên sàn ...
+
+Cycle N: Spider crawl → tin boost xuất hiện lại →
+         Dedup: source_id ĐÃ trong _seen_source_ids → CHẶN ✅ (bình thường)
+         
+*** NHƯNG nếu bot restart, hoặc cache bị flush (>1000 listings seeded) ***
+
+Cycle N+1: Spider crawl → Dedup: source_id KHÔNG trong cache nữa →
+           DB upsert (overwrite status "new") → Telegram gửi LẠI ❌
+```
+
+### Giải pháp: Check DB status trước khi gửi Telegram
+
+Thay vì chỉ dựa vào in-memory dedup, thêm một lớp kiểm tra DB ngay trước khi gửi Telegram.
+
+#### [MODIFY] [agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py)
+
+Trong `_process_listing()`, trước block gửi Telegram (dòng ~258), thêm check:
+
+```python
+# Send alerts — deduplicate by chat_id to prevent double-send
+if saved and self.classifier.should_alert_wife(result, listing):
+    # ── BOOST DEDUP: Skip if already alerted for this source:source_id ──
+    existing_status = self.db.get_listing_status(listing.source, listing.source_id)
+    if existing_status and existing_status.startswith("alerted"):
+        logger.info(
+            f"[orchestrator] BOOST DEDUP: {listing.source}/{listing.source_id} "
+            f"already '{existing_status}' — skip re-alert"
+        )
+        return False
+    # ─────────────────────────────────────────────────────────────────
+    
+    listing_id = saved.get("id", "")
+    ...  # rest unchanged
+```
+
+> [!IMPORTANT]
+> **Tại sao check ở đây mà không sửa dedup pipeline?**
+> - `DedupPipeline` là in-memory cache — nhanh nhưng ephemeral (mất khi restart)
+> - DB check ở orchestrator level là **last line of defense** — chậm hơn 1 query nhưng 100% reliable
+> - Không cần sửa `dedup.py` vì nó vẫn hoạt động đúng cho trường hợp bình thường (không restart)
+
+#### [MODIFY] [client.py](file:///d:/Programming/real-estork/db/client.py)
+
+`get_listing_status(source, source_id)` **đã tồn tại** ở dòng 109–122. Không cần sửa gì.
+
+#### Luồng xử lý upsert khi tin bị boost
+
+Hiện tại `upsert_listing` dùng `on_conflict="source,source_id"` → khi tin boost quay lại và vượt qua dedup (do cache miss), nó sẽ **overwrite** row cũ bao gồm `status`. Cần đảm bảo upsert **không overwrite** status nếu đã alerted.
+
+#### [MODIFY] [agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py)
+
+Trong `_process_listing()`, trước khi gọi `self.db.upsert_listing(listing_data)` (~dòng 251), thêm logic preserve status:
+
+```python
+# Preserve existing status if already alerted — prevent boost overwrite
+existing_status = self.db.get_listing_status(listing.source, listing.source_id)
+if existing_status and existing_status.startswith("alerted"):
+    listing_data["status"] = existing_status
+```
+
+> [!NOTE]  
+> Việc `get_listing_status` được gọi 2 lần (trước upsert + trước alert) có thể optimize thành 1 lần.
+> Nhưng để code rõ ràng, tôi sẽ gộp thành 1 biến dùng chung.
+
+### Tối ưu: Gộp thành 1 DB query
+
+Thực tế sẽ code gọn hơn: query `existing_status` **1 lần** ở đầu `_process_listing()` rồi dùng lại:
+
+```python
+async def _process_listing(self, listing, enrich_profile_spider=None):
+    # ── Check existing status (boost dedup + status preservation) ──
+    existing_status = self.db.get_listing_status(listing.source, listing.source_id)
+    
+    ... # broker veto, classify, OSINT...
+    
+    # Preserve alerted status in upsert
+    if existing_status and existing_status.startswith("alerted"):
+        listing_data["status"] = existing_status
+    
+    saved = self.db.upsert_listing(listing_data)
+    
+    # Alert check: skip if already alerted
+    if saved and self.classifier.should_alert_wife(result, listing):
+        if existing_status and existing_status.startswith("alerted"):
+            logger.info(f"[orchestrator] BOOST DEDUP: skip re-alert ...")
+            return False
+        ... # send telegram as usual
+```
+
+---
+
+## Không thay đổi
+
+| Thành phần | Trạng thái |
+|---|---|
+| Pro-agent badge → hard-skip | Giữ nguyên |
+| Scoring tín hiệu `detail_has_pro_agent_badge (-40)` | Giữ nguyên |
+| Dedup ratio early-stop (>70%) | Giữ nguyên |
+| Detail enrichment (contact_name, poster_total_listings) | Giữ nguyên |
+| `max_pages: 40` safety cap | Giữ nguyên |
+| Post-crawl today filter (defensive) | Giữ nguyên |
+| `pipeline/dedup.py` in-memory dedup | Giữ nguyên (vẫn hoạt động cho happy path) |
+| `notifications/telegram.py` | Giữ nguyên (không cần sửa notifier) |
+| DB schema | Giữ nguyên (dùng status field hiện có) |
+
+---
+
+## Rủi ro cần lưu ý
+
+> [!NOTE]
+> **VIP cards có thể tăng số lượng detail fetch đáng kể.** Nếu pages 1–10 chứa nhiều VIP today,
+> `detail_concurrency: 6` (config hiện tại) có thể làm crawl chậm hơn. Không cần sửa gì,
+> chỉ cần biết để monitor.
+
+> [!WARNING]
+> **`same_session_multi_listing` signal (-30 điểm) sẽ fire mạnh hơn cho VIP** vì giờ đây cùng
+> 1 account VIP đăng nhiều tin sẽ được collect và so sánh. Đây là behavior ĐÚNG — cần ensure
+> `scoring_batdongsan.yaml` signal này vẫn active (đang active, không cần sửa).
+
+> [!NOTE]
+> **Telegram boost dedup thêm 1 DB query/listing** — cost rất nhỏ (Supabase indexed query trên
+> unique constraint `source, source_id`). Không ảnh hưởng performance.
+
+---
+
+## Tổng kết files thay đổi
+
+| File | Thay đổi | Mục đích |
+|---|---|---|
+| `spiders/base.py` | Thêm `is_vip: bool = False` | VIP metadata cho early-stop |
+| `spiders/batdongsan.py` | Docstring, parse VIP, loop logic, log | VIP-aware early-stop |
+| `orchestrator/agent.py` | Check existing status trước upsert + alert | Chống gửi trùng Telegram |
+
+---
+
+## Verification Plan
+
+### Automated
+- Review code changes manually trước khi deploy
+
+### Runtime Monitoring (manual)
+
+**VIP-aware:**
+1. Chạy 1 cycle và quan sát log:
+   - `VIP_parsed=X` phải > 0 (có VIP được parse)
+   - `non_today=Y` chỉ từ tin thường
+   - Early-stop phải trigger sau khi hết VIP zone (khi gặp tin thường hôm qua)
+2. Confirm VIP tin hôm nay xuất hiện trong Telegram alert với scoring đúng
+3. Confirm pro-agent VIP không xuất hiện (bị skip)
+
+**Telegram dedup:**
+1. Chạy 2 cycle liên tiếp với cùng data → cycle 2 không gửi Telegram
+2. Restart bot giữa 2 cycle → vẫn không gửi lại (do DB check)
+3. Log phải show `BOOST DEDUP: skip re-alert` cho tin đã alerted

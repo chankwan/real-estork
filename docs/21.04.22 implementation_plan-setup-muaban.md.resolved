@@ -1,0 +1,46 @@
+# Muaban Phone Extraction Implementation
+
+The objective is to enable phone number extraction for `muaban.net` listings by implementing a browser-based authentication mechanism (`setup-muaban`) similar to `nhatot`. This session will then be used by the spider to reveal phone numbers that are currently obscured/encrypted.
+
+## User Review Required
+
+> [!IMPORTANT]
+> The phone reveal mechanism on `muaban.net` requires a logged-in session. The user will need to run `python -m cli.main setup-muaban` and perform a manual Google login once to initialize the persistent browser profile.
+
+## Proposed Changes
+
+### 1. Auth Client
+
+#### [NEW] [muaban_auth.py](file:///d:/Programming/real-estork/auth/muaban_auth.py)
+- Create `MuabanAuthClient` modeled after `NhatotAuthClient` and `BatdongsanAuthClient`.
+- Uses Playwright with a persistent browser profile (`.muaban_browser_profile/`).
+- Captures cookies and stores them in `.muaban_cookies.json`.
+
+### 2. CLI Integration
+
+#### [MODIFY] [main.py](file:///d:/Programming/real-estork/cli/main.py)
+- Add the `setup-muaban` command to allow the user to perform the one-time interactive login.
+
+### 3. Spider Enhancement
+
+#### [MODIFY] [muaban.py](file:///d:/Programming/real-estork/spiders/muaban.py)
+- Implement `enrich_listing(listing)` or integrate phone fetch into the main loop.
+- Use `MuabanAuthClient` to retrieve the session.
+- Call the internal Muaban phone reveal API.
+- Update `phone_enc` to actual `phone` digit string.
+
+### 4. Orchestrator Integration
+
+#### [MODIFY] [agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py)
+- Initialize `MuabanAuthClient` in `__init__`.
+- Update `_check_muaban_token` to perform auto-refresh if possible, or notify user to re-run setup.
+
+## Verification Plan
+
+### Automated Tests
+- `python -m cli.main setup-muaban` (Manual verification of browser launch).
+- Scratch script to test `MuabanSpider.enrich_listing` with a real `source_id`.
+
+### Manual Verification
+- Verify that Muaban listings in Telegram now contain clear phone numbers instead of empty/masked ones.
+- Check `.muaban_cookies.json` after setup.

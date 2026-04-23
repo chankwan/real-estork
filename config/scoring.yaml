@@ -1,0 +1,261 @@
+# RealEstork — Classification Scoring Config v2
+# Score 0-100. Cao = likely chính chủ.
+# Sửa signals bất cứ lúc nào. Restart scheduler để apply (không redeploy).
+
+version: 2
+threshold_chinh_chu: 65       # score >= này → "chinh_chu"
+threshold_can_xac_minh: 40    # score >= này → "can_xac_minh"
+                               # score < 40 → "moi_gioi"
+
+base_score: 50                 # Mọi listing bắt đầu ở 50
+
+# === Alert filters (không ảnh hưởng score, ảnh hưởng alert routing) ===
+alert_filters:
+  wife_max_listing_age_hours: 24   # Chỉ alert vợ tin đăng trong 48h
+  wife_min_score: 55               # Alert vợ khi score >= 55
+  wife_min_price_vnd: 15000000     # Chỉ alert mặt bằng >= 15 triệu/tháng
+  product_min_score: 65            # Alert sản phẩm aggregate khi >= 65
+  # wife_main_street_only: true   # Chỉ alert mặt tiền (is_main_street=True). Bật khi muốn lọc gắt hơn.
+  wife_allowed_districts:          # Chỉ alert khu vực trung tâm TPHCM (empty = tất cả)
+    - "Quận 1"
+    - "Quận 2"
+    - "Quận 3"
+    - "Quận 4"
+    - "Quận 5"
+    - "Quận 6"
+    - "Quận 7"
+    - "Quận 8"
+    - "Quận 9"
+    - "Quận 10"
+    - "Quận 11"
+    - "Bình Thạnh"
+    - "Phú Nhuận"
+    - "Tân Bình"
+    - "Thủ Đức"
+    - "Gò Vấp"
+
+signals:
+  # ===================================================
+  # PHONE-BASED SIGNALS — TẠM TẮT
+  # Phụ thuộc NHATOT_ACCESS_TOKEN (24h TTL), không ổn định
+  # Bật lại khi có giải pháp auto-refresh token
+  # ===================================================
+
+  # phone_single_listing:   weight: +20
+  # phone_few_listings:     weight: +5
+  # phone_multi_listing_same_platform: weight: -25
+  # phone_multi_platform:   weight: -15
+  # phone_known_broker:     weight: -50
+
+  # ===================================================
+  # TEXT-BASED SIGNALS
+  # ===================================================
+
+  text_owner_language:
+    description: "Description chứa ngôn ngữ chính chủ — giảm weight vì môi giới hay giả danh claim này"
+    weight: +5
+    keywords:
+      - "nhà tôi"
+      - "chính chủ cần cho thuê"
+      - "liên hệ trực tiếp"
+      - "chủ nhà cho thuê"
+      - "tôi cần cho thuê"
+      - "nhà chính chủ"
+      - "cho thuê trực tiếp"
+      - "không qua trung gian"
+    check: "any(kw in description_lower for kw in keywords)"
+
+  text_marketing_superlatives:
+    description: "Description 'nói quá' kiểu marketing môi giới — chủ Sài Gòn giàu không cần hype mặt bằng"
+    weight: -20
+    keywords:
+      # Địa điểm thổi phồng
+      - "đắc địa"
+      - "vị trí vàng"
+      - "vị trí chiến lược"
+      - "trung tâm sầm uất"
+      - "mặt tiền vàng"
+      # Siêu phẩm / hiếm có
+      - "siêu hot"
+      - "siêu phẩm"
+      - "hàng hiếm"
+      - "cơ hội hiếm có"
+      - "hiếm có khó tìm"
+      - "không thể bỏ lỡ"
+      - "nhanh tay"
+      - "cơ hội vàng"
+      # Lợi nhuận / đầu tư
+      - "sinh lợi cao"
+      - "tiềm năng cao"
+      - "cơ hội đầu tư"
+      - "đầu tư sinh lời"
+      - "bao lời"
+      # Giá / chất lượng phóng đại
+      - "giá tốt nhất"
+      - "giá hời"
+      - "rẻ nhất khu vực"
+      - "mặt bằng đẹp nhất"
+      - "sang trọng bậc nhất"
+    check: "any(kw in description_lower for kw in keywords)"
+
+  text_commission_mention:
+    description: "Description nhắc đến hoa hồng/commission — rõ ràng môi giới"
+    weight: -15
+    keywords:
+      - "hoa hồng"
+      - "commission"
+      - "phí môi giới"
+      - "% cho sale"
+      - "có hoa hồng"
+      - "hỗ trợ hoa hồng"
+    check: "any(kw in description_lower for kw in keywords)"
+
+  text_agent_language:
+    description: "Ngôn ngữ đặc trưng môi giới"
+    weight: -10
+    keywords:
+      - "liên hệ môi giới"
+      - "chuyên bds"
+      - "chuyên bất động sản"
+      - "hotline:"
+      - "zalo:"
+      - "chuyên gia tư vấn"
+    check: "any(kw in description_lower for kw in keywords)"
+
+  # ===================================================
+  # POSTING PATTERN SIGNALS
+  # ===================================================
+
+  photo_count_low:
+    description: "Ít ảnh (<= 5), style amateur — likely chính chủ chụp nhanh"
+    weight: +5
+    check: "len(images) <= 5"
+
+  photo_count_high:
+    description: "Nhiều ảnh (>= 8), professional style — likely môi giới"
+    weight: -10
+    check: "len(images) >= 8"
+
+  posted_outside_business_hours:
+    description: "Đăng ngoài giờ hành chính — chủ nhà đăng sau giờ làm"
+    weight: +8
+    check: "posted_hour < 8 or posted_hour > 18 or is_weekend"
+
+  account_name_broker_keywords:
+    description: "Tên tài khoản chứa từ khóa môi giới/tổ chức (BĐS, địa ốc, công ty, doanh nghiệp...)"
+    weight: -20
+    check: "any(kw in contact_name.lower() for kw in broker_keywords)"
+
+  same_session_multi_listing:
+    description: "Cùng tài khoản đăng >2 tin trong cùng batch crawl — broker pattern (2 tin có thể chủ 2 mặt bằng)"
+    weight: -20
+    check: "same_session_account_count > 2"
+
+  description_many_emojis:
+    description: "Nhiều emoji (>=5) trong toàn bộ bài đăng (tiêu đề + mô tả) — format marketing môi giới"
+    weight: -15
+    check: "emoji_count >= 5"
+
+  # phone_hidden_owner: DISABLED — Chotot account bị ban 2026-04-22, phone API không còn dùng
+  # weight: +12 đã redistribute sang account_new_or_few_posts (+4), description_no_diacritics (+5), posted_outside_business_hours (+3)
+
+  account_type_personal:
+    description: "Platform xác nhận tài khoản cá nhân (nhatot type=u) — strong chính chủ signal"
+    weight: +25
+    check: "account_type == 'u'"
+    sites: "nhatot (type field). Các site khác: None → không fire"
+
+  account_type_business:
+    description: "Platform xác nhận tài khoản doanh nghiệp (nhatot type=s) — strong môi giới signal"
+    weight: -25
+    check: "account_type == 's'"
+    sites: "nhatot (type field). Các site khác: None → không fire"
+
+  account_new_or_few_posts:
+    description: "Account mới / ít tin trên platform — likely chính chủ"
+    weight: +14
+    check: "poster_total_listings <= 2"
+
+  seller_high_sold_count:
+    description: "Lịch sử >= 20 tin đã đăng — môi giới chuyên nghiệp (sold_ads từ seller_info)"
+    weight: -30
+    check: "poster_sold_listings >= 20"
+    note: "sold_ads=470 → rõ ràng môi giới. 0=không có data → không fire"
+
+  # ===================================================
+  # LISTING AGE SIGNALS [ADDED v2.1]
+  # ===================================================
+
+  listing_very_fresh:
+    description: "Tin mới đăng trong 2 giờ — PRIORITY cao nhất cho vợ"
+    weight: +10
+    check: "listing_age_hours <= 2"
+    # Vợ cần biết trước đồng nghiệp → tin < 2h là instant alert
+
+  listing_fresh:
+    description: "Tin trong 24 giờ"
+    weight: +5
+    check: "listing_age_hours != None and 2 < listing_age_hours <= 24"
+
+  listing_stale:
+    description: "Tin cũ hơn 7 ngày — môi giới tái đăng, giá trị thấp"
+    weight: -15
+    check: "listing_age_hours != None and listing_age_hours > 168"
+
+  # ===================================================
+  # FLOOR LEVEL SIGNALS [ADDED v2.1]
+  # ===================================================
+
+  floor_ground_level:
+    description: "Tầng trệt / tầng 1 — cao nhất về nhu cầu và giá"
+    weight: +8
+    check: "floor_level == 1"
+    # Tầng trệt vs lầu 1+ chênh 50-80% giá thuê HCMC
+
+  floor_ambiguous:
+    description: "Không rõ tầng — chính chủ thường lazy, không ghi kỹ"
+    weight: +3
+    check: "floor_level is None"
+
+  floor_upper_level:
+    description: "Từ lầu 3 trở lên — ít nhu cầu, thường chỉ VP"
+    weight: -5
+    check: "floor_level is not None and floor_level >= 3"
+
+  # ===================================================
+  # DESCRIPTION QUALITY SIGNALS
+  # ===================================================
+
+  description_no_diacritics:
+    description: "Viết không dấu / có typo — chủ nhà gõ nhanh trên điện thoại, không dùng AI hay copy-paste"
+    weight: +15
+    check: "no_diacritics_ratio < 0.08"
+    # Tiếng Việt chuẩn: ~25-40% ký tự có dấu. Nếu < 8% → viết không dấu → chính chủ
+    # AI text và môi giới luôn viết đúng diacritics. Chủ nhà gõ tắt / có typo.
+
+  description_too_short:
+    description: "Mô tả rất ngắn (< 50 chars) — chính chủ viết qua loa"
+    weight: +5
+    check: "len(description) < 50"
+
+  description_medium:
+    description: "Mô tả vừa phải (50-300 chars) — balanced"
+    weight: 0
+    check: "50 <= len(description) <= 300"
+
+  description_too_long:
+    description: "Mô tả rất dài (> 500 chars) — copy-paste marketing"
+    weight: -5
+    check: "len(description) > 500"
+
+  # ===================================================
+  # AI SIGNAL (supplement, ~15% influence)
+  # ===================================================
+
+  ai_classification:
+    description: "LLM phân tích text + metadata — 1 signal trong ~15 signals"
+    weight: 30
+    # 30/~200 total range ≈ 15% influence
+    # Nếu AI unavailable → rules vẫn chạy đầy đủ
+    model: "ollama/gemma4:e4b"   # Switchable via config/ai.yaml
+    check: "ai_owner_probability"  # 0.0-1.0, nhân với weight

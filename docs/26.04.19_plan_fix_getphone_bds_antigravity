@@ -1,0 +1,57 @@
+# Automate Batdongsan Auth & Improve Phone Extraction
+
+The goal is to fix the "hit or miss" phone extraction from Batdongsan, automate the token renewal process to eliminate manual operations, and ensure extracted phones are correctly passed to Telegram.
+
+## Analysis of Root Causes
+
+1. **State Desynchronization (Có khi lấy được, có khi không)**: 
+   The `BatdongsanSpider` creates a *local* instance of `BatdongsanAuthClient` when running `decrypt_phones_via_cffi()`. When the API returns `401 Unauthorized`, it sets `cookies_expired = True` on this local instance. However, the Orchestrator (`agent.py`) uses its own instance. The Orchestrator remains unaware of the 401 error until the JWT token naturally expires (up to 1 hour later). During this window, all phone extraction attempts fail silently without triggering a token refresh.
+2. **Headless Refresh Trigger Failure**:
+   In `agent.py`, the `_check_batdongsan_cookies` logic triggers a headless refresh only when `self.bds_auth_client.cookies_expired` is True during the UMS check. Because of the state desynchronization, this is often missed or delayed.
+3. **Cloudflare Blocking on Headless**:
+   The current Headless Refresh uses standard Playwright Chromium. While it has some stealth args, Cloudflare can still block it occasionally. We need to ensure it uses the most robust headers, or gracefully fail over. 
+
+## User Review Required
+
+> [!IMPORTANT]
+> Because Batdongsan aggressively uses Cloudflare, standard Chromium headless login might still be subject to occasional CAPTCHAs. However, fixing the state logic will 99% eliminate silent failures and only trigger manual requests when absolutely necessary (e.g. token completely revoked by the host).
+
+## Proposed Changes
+
+---
+
+### `Batdongsan Auth & Orchestrator`
+Fix the state synchronization and refresh triggers.
+
+#### [MODIFY] `d:\Programming\real-estork\spiders\batdongsan.py`
+- Modify `_fetch_phones_batch` to accept or fetch the global `BatdongsanAuthClient` so that when `cookies_expired` is flagged, the Orchestrator's next `_check_batdongsan_cookies` catches it immediately.
+- Update the assignment: `auth = getattr(self, "bds_auth_client", BatdongsanAuthClient())`. We will inject it from `agent.py`.
+- If a phone is successfully extracted, cleanly set `listing.phone`.
+
+#### [MODIFY] `d:\Programming\real-estork\orchestrator\agent.py`
+- Pass the Orchestrator's `self.bds_auth_client` into the Spider when spawning it in `_process_batdongsan_cycle`. Alternatively, make `spider.cookies_expired = True` bubble up properly when `BatdongsanSpider` detects auth failures.
+- Update `_check_batdongsan_cookies` to strictly trigger `_refresh_headless` whenever UMS returns `isSuccess: false` OR `spider.cookies_expired` is True.
+
+#### [MODIFY] `d:\Programming\real-estork\auth\batdongsan_auth.py`
+- Refine `_refresh_headless` to ensure it always loads existing cookies (including the 1-year `con.unl.usr.id`) into the context before visiting `https://batdongsan.com.vn`. This maximizes the chance of the server issuing a seamless renewed `accessToken` without Cloudflare rejecting the cold session.
+
+---
+
+### `Notifications`
+Validate the formatting logic.
+
+#### [MODIFY] `d:\Programming\real-estork\notifications\telegram.py`
+- Ensure that if `listing.phone` exists, it directly prints the phone number without any "SĐT ẩn" obfuscation message. (The current logic is mostly correct but will be verified against the new Spider returns).
+
+## Open Questions
+
+None currently. The fix is strictly operational and architectural.
+
+## Verification Plan
+
+### Automated Tests
+- Run `batdongsan_cycle` manually using the newly synchronized state and trigger a 401 on purpose to test the headless auto-refresh.
+- Observe `orchestrator.log` to ensure `[orchestrator] UMS fail — thử headless refresh via saved profile...` successfully executes and token is renewed automatically.
+
+### Manual Verification
+- Review the Telegram listing notifications to ensure Batdongsan properties successfully present their phone numbers.

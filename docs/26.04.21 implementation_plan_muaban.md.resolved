@@ -1,0 +1,65 @@
+# Muaban.net Spider Implementation Plan
+
+This plan outlines the creation of a new spider for `muaban.net` to scrape high-quality real estate listings, specifically targeting commercial rentals in HCMC.
+
+## User Review Required
+
+> [!IMPORTANT]
+> **VIP vs Normal Listings**: I will implement an early-stop logic similar to `batdongsan.py`. It will only break when encountering a "Normal" listing that is not from "today". The `max_pages` limit will be removed (or set to a very high default) to allow full daily coverage.
+> **Batdongsan Update**: As requested, I will also remove the strict `max_pages` limit for `batdongsan.py` to ensure all today's listings are captured.
+> **Phone Extraction**: Manual login (Google). I will implement a Telegram notification to the admin chat when the session/token expires, similar to the Nhatot mechanism.
+
+## Proposed Changes
+
+### Spiders Component
+
+#### [MODIFY] [muaban.py](file:///d:/Programming/real-estork/spiders/muaban.py)
+- **Inheritance**: Inherit from `BaseSpider`.
+- **Fetching**: Use `StealthyFetcher` to bypass Cloudflare and retrieve `__NEXT_DATA__`.
+- **Parsing**:
+  - Extract items from `props.pageProps.classified.items`.
+  - Map fields: `id` -> `source_id`, `title`, `summary` -> `description`, `price`, `publish_display` -> `posted_at`.
+  - **VIP Logic**: Map `service_ids` (16, 8, 4) to `is_vip=True`.
+  - **Broker Signals**: 
+    - Use `is_company` boolean.
+    - Check for `user.url` to detect business profiles.
+    - Use `user_id` for same-session account counts.
+- **Early-Stop**: 
+  - Scan pages sequentially.
+  - If listing is "Normal" (not VIP) AND `posted_at` is earlier than today -> break the entire crawl.
+- **Authentication**:
+  - Implement `token_expired` flag.
+  - Add logic to use cookies from `.env` or session file.
+
+#### [MODIFY] [batdongsan.py](file:///d:/Programming/real-estork/spiders/batdongsan.py)
+- **Early-Stop**: Remove `max_pages` restriction (or set to 100) to ensure full coverage of "today" listings.
+
+#### [MODIFY] [agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py)
+- **Token Check**: Add `_check_muaban_token` method to notify via Telegram when Muaban session expires.
+
+### Configuration Component
+
+#### [MODIFY] [spiders.yaml](file:///d:/Programming/real-estork/config/spiders.yaml)
+- Update `muaban` entry:
+  - Set `enabled: true`, `type: stealthy`.
+  - URL: `https://muaban.net/bat-dong-san/cho-thue-van-phong-mat-bang-ho-chi-minh?sort=1&price=15000000-1000000000`.
+  - Set `max_pages: 50` (as a safety cap, though early-stop will trigger much sooner).
+- Update `batdongsan` entry:
+  - Set `max_pages: 50`.
+
+## Open Questions
+
+> [!NOTE]
+> 1. **District Extraction**: I will ensure the spider accurately extracts the district name (Quận/Huyện) so the `wife_allowed_districts` filter works correctly.
+> 2. **Telegram Alerts**: I'll add a specific alert for Muaban when the user needs to manually re-login via the CLI or browser.
+
+## Verification Plan
+
+### Automated Tests
+- Run `muaban` spider via a scratch script to verify JSON parsing and field mapping.
+- Log the number of VIPs vs Normal listings detected.
+- Verify `posted_at` normalization for "Hôm nay", "X giờ trước", "Hôm qua".
+
+### Manual Verification
+- Check the `scratch_muaban.json` or logs to ensure `is_company` and `user_id` are correctly captured.
+- Compare scraped data with the live website for accuracy.

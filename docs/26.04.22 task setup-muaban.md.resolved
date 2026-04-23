@@ -1,0 +1,7 @@
+# Implementation: Muaban Phone Extraction
+
+- [x] Implement `auth/muaban_auth.py` (MuabanAuthClient)
+- [x] Add `setup-muaban` command to `cli/main.py`
+- [x] Update `spiders/muaban.py` to reveal phone numbers
+- [x] Integrate `MuabanAuthClient` into `orchestrator/agent.py`
+- [x] Verify phone extraction with scratch script

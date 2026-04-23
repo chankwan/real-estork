@@ -1,0 +1,50 @@
+# RealEstork — Python Dependencies
+# Python 3.12+
+
+# === Core Scraping ===
+scrapling>=0.2.9           # Adaptive selectors, StealthyFetcher, DynamicFetcher
+camoufox[geoip]            # Required by Scrapling StealthyFetcher
+requests>=2.31.0           # HTTP fallback, simple spiders
+aiohttp>=3.9.0             # Async HTTP
+
+# === Database ===
+supabase>=2.3.0            # Supabase Python client (PostgreSQL + realtime)
+
+# === Scheduling ===
+apscheduler>=3.10.4        # Job scheduling (cron + interval)
+
+# === AI / LLM ===
+ollama>=0.2.0              # Ollama local LLM client
+openai>=1.30.0             # OpenAI-compatible (for openclaw-zero-token endpoint)
+httpx>=0.27.0              # Async HTTP for AI API calls
+
+# === Data Processing ===
+unidecode>=1.3.8           # Remove diacritics for address normalization
+python-dateutil>=2.9.0     # Date parsing
+pydantic>=2.7.0            # Data validation + schema
+
+# === Notifications ===
+python-telegram-bot>=21.0  # Telegram Bot API
+httpx                      # Zalo OA API calls (already listed)
+
+# === Browser Automation (Nhatot token refresh via Google OAuth) ===
+playwright>=1.44.0         # Headless Chrome — persistent profile + network intercept
+curl_cffi>=0.7.0           # Firefox133 TLS fingerprint — Cloudflare bypass for batdongsan API
+
+# === CLI ===
+typer>=0.12.0              # CLI framework
+rich>=13.7.0               # Pretty terminal output
+
+# === Config ===
+pyyaml>=6.0.1              # YAML config files
+python-dotenv>=1.0.1       # .env loading
+
+# === Utils ===
+loguru>=0.7.2              # Structured logging
+tenacity>=8.3.0            # Retry with backoff
+shortuuid>=1.0.13          # Short IDs for CLI display
+
+# === Testing ===
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+respx>=0.21.0              # Mock httpx for tests

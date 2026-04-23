@@ -1,0 +1,35 @@
+# Muaban Data Audit — April 22, 2026
+
+I audited the first 30 listings for "Cho thuê văn phòng/mặt bằng" in HCMC to verify the classification signals.
+
+## 1. The `is_company` field is broken
+| User ID | Total Listings | is_company | Role |
+| :--- | :--- | :--- | :--- |
+| 3211182 | **56,461** | false | Definite Broker/Aggregator |
+| 3339960 | 5 | false | Broker |
+| 3163802 | 1 | false | Likely Owner |
+
+**Conclusion**: `is_company` is `false` for everyone. We should set its weight to **0** for Muaban.
+
+## 2. VIP Service IDs (Service ID)
+- Service IDs observed: 16, 8, 4, 128.
+- **Surprise**: User `3163802` (Likely Owner, 1 listing) used `service_id: 16`.
+- **Conclusion**: VIP does not 100% mean broker. It just means the user paid. Owners *do* pay sometimes. We should reduce the negative weight for VIP from -30 to something milder (e.g., -10).
+
+## 3. Contact Name & Avatar
+- Professional names like "Ngọc Dung" or "Minh Thu" with logos are clear brokers.
+- Owners use simple names like "A. Sơn", "Chị Hà".
+- **Conclusion**: We should rely more on name-based broker keywords and AI analysis of the name/avatar.
+
+## 4. Phone Number as Name
+- **Result**: 0 out of 30 listings used a phone number as their contact name.
+- **Conclusion**: This signal is rare and not a reliable "Owner" indicator for Muaban.
+
+## Proposed Strategy
+1. **Prioritize `poster_total_listings`**: This is the most accurate signal. We need to fix the session/enrichment to capture this.
+2. **AI Name Check**: Use AI to flag professional-sounding names or logos.
+3. **Weight Overrides**:
+   - `account_type_personal`: 0 (useless)
+   - `listing_is_vip`: -10 (mild negative)
+   - `account_name_broker_keywords`: -30 (strong negative)
+   - `text_owner_language`: -5 (mild negative, since brokers fake it)

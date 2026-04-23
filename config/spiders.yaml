@@ -1,0 +1,79 @@
+# RealEstork — Spider Configuration
+# Plugin-based: enable/disable/tune each spider without redeploy
+# Thêm site mới: tạo spiders/new_site.py + thêm entry ở đây
+
+spiders:
+  - name: nhatot
+    enabled: true
+    type: stealthy
+    # StealthyFetcher: bypass Cloudflare, scrapes __NEXT_DATA__ JSON
+    # URL từ vợ 13/04/2026: thue-bat-dong-san (all BĐS cho thuê), price>=15M, f=p (cá nhân only, không business/broker)
+    url: https://www.nhatot.com/thue-bat-dong-san-tp-ho-chi-minh?price=15000000-%2A&f=p
+    interval_minutes: 20
+    max_pages: 10          # Hard ceiling — early-stop thường kích hoạt trước
+    age_stop_hours: 24     # Dừng khi gặp trang có tin non-VIP cũ hơn 24h
+    dedup_stop_ratio: 0.7  # Dừng khi >70% tin trên trang đã seen
+    request_delay_seconds: 5
+
+  - name: alonhadat
+    enabled: false     # Tạm tắt — focus nhatot trước
+    type: http
+    url: https://alonhadat.com.vn/cho-thue-nha-mat-tien/ho-chi-minh
+    interval_minutes: 30
+    max_pages: 3
+    request_delay_seconds: 3
+
+  - name: batdongsan
+    enabled: true
+    type: stealthy
+    # Crawl 5 loại BĐS riêng lẻ — mỗi loại có URL slug riêng trên BDS
+    # early-stop per URL: dừng khi gặp tin "hôm qua" hoặc dedup >70%
+    # interval_minutes ignored — scheduling trong config/schedule.yaml (run_batdongsan_cycle)
+    urls:
+      - https://batdongsan.com.vn/cho-thue-nha-mat-pho-tp-ho-chi-minh   # Nhà mặt phố
+      - https://batdongsan.com.vn/cho-thue-shophouse-nha-pho-thuong-mai-tp-hcm  # Shophouse
+      - https://batdongsan.com.vn/cho-thue-kho-nha-xuong-dat-tp-hcm     # Kho, nhà xưởng, đất
+      - https://batdongsan.com.vn/cho-thue-nha-rieng-tp-hcm             # Nhà riêng
+      - https://batdongsan.com.vn/cho-thue-nha-biet-thu-lien-ke-tp-hcm  # Nhà biệt thự, liền kề
+    interval_minutes: 20
+    max_pages: 50              # Safety cap per URL — early-stop thường kích hoạt trước
+    request_delay_seconds: 5
+    detail_concurrency: 3      # Giảm để tránh Cloudflare block
+    dedup_stop_ratio: 0.7      # Early-stop khi >70% của page đã seen
+
+  - name: homedy
+    enabled: false      # Phase 1.5
+    type: http
+    url: https://homedy.com/cho-thue-mat-bang/tp-hcm
+    interval_minutes: 60
+    max_pages: 3
+
+  - name: muaban
+    enabled: true
+    type: stealthy
+    url: https://muaban.net/bat-dong-san/cho-thue-van-phong-mat-bang-ho-chi-minh?sort=1&price=15000000-100000000
+    interval_minutes: 30
+    max_pages: 50
+    request_delay_seconds: 5
+    detail_concurrency: 3      # Stage-2 concurrent detail fetch (contact_name + phone)
+    dedup_stop_ratio: 0.7
+
+  - name: cafeland
+    enabled: false      # Phase 2
+    type: http
+    interval_minutes: 60
+
+  - name: facebook_groups
+    enabled: false      # Enable khi ready
+    type: http
+    # pip install facebook-scraper (public groups only, MVP free)
+    interval_minutes: 60
+    groups:
+      - "cho.thue.mat.bang.kinh.doanh.tphcm"
+      - "sang.nhuong.quan.cho.thue.mat.bang.tphcm"
+      - "Cho-Thue-Mat-Bang-KINH-DOANH-TpHCM"
+
+  - name: zalo_web
+    enabled: false      # Optional, risk bị block account
+    type: dynamic
+    interval_minutes: 120

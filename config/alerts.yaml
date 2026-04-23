@@ -1,0 +1,49 @@
+# RealEstork — Alert / Notification Configuration
+
+channels:
+  # === Zalo OA — Alert cho vợ (Hướng 1) ===
+  zalo:
+    enabled: true
+    type: zalo_oa
+    # Credentials loaded from .env: ZALO_OA_ACCESS_TOKEN, ZALO_WIFE_USER_ID
+    recipients:
+      wife:
+        user_id_env: "ZALO_WIFE_USER_ID"
+        filters:
+          min_score: 55
+          max_listing_age_hours: 48
+          districts: []          # Empty = all districts (HCMC-wide)
+          min_price_million: 0
+          max_price_million: 999
+        send_instant: true       # Score >= threshold_chinh_chu → instant alert
+        send_batch: true         # Score 40-64 → batch every 2 hours
+        batch_interval_hours: 2
+
+  # === Telegram Bot — Alert cho sản phẩm aggregate (Hướng 2) ===
+  telegram:
+    enabled: true
+    type: telegram_bot
+    # Token loaded from .env: TELEGRAM_BOT_TOKEN
+    default_filters:
+      min_score: 65              # Chỉ gửi chính chủ confirmed
+      max_listing_age_hours: 48
+
+  # === Discord — Community + alerts (Hướng 2) ===
+  discord:
+    enabled: false               # Enable khi có Discord server setup
+    type: discord_bot
+    # Token loaded from .env: DISCORD_BOT_TOKEN
+    guild_id: ""
+    channels:
+      all_listings: ""           # Channel ID #all-listings
+      chinh_chu_only: ""         # Channel ID #chinh-chu-only
+      announcements: ""          # Channel ID #announcements
+
+# === Daily Digest ===
+digest:
+  send_to_telegram: true         # Chankwan's personal Telegram
+  send_to_zalo: true             # Vợ's daily summary
+  time: "08:00"                  # 8:00 AM
+  include_accuracy_stats: true
+  include_top_listings: 10
+  include_signal_analysis: true

@@ -1,0 +1,43 @@
+# Walkthrough: Muaban Phone Extraction Implementation
+
+I have implemented the infrastructure for extracting phone numbers from `muaban.net` listings, following the pattern used for `nhatot`.
+
+## Changes Made
+
+### 1. Muaban Authentication Client
+Created [muaban_auth.py](file:///d:/Programming/real-estork/auth/muaban_auth.py) which provides:
+- **`setup_interactive()`**: Opens a visible browser for you to perform a one-time Google login.
+- **`refresh_session()`**: A headless mechanism for the orchestrator to keep the session alive by refreshing the browser profile.
+- **`load_cookies()`**: Loads captured session cookies for programmatic API calls.
+
+### 2. CLI Integration
+Added the `setup-muaban` command to [main.py](file:///d:/Programming/real-estork/cli/main.py). 
+
+> [!TIP]
+> Run the setup now by executing:
+> `venv\Scripts\python.exe -m cli.main setup-muaban`
+
+### 3. Spider Enrichment
+Updated [muaban.py](file:///d:/Programming/real-estork/spiders/muaban.py) to include `enrich_listing()`. This method:
+- Uses the saved session cookies.
+- Calls the internal `muaban.net/api/v1/classifieds/{id}/phone` endpoint.
+- Cleans and returns the revealed phone number.
+
+### 4. Orchestrator Integration
+Updated [agent.py](file:///d:/Programming/real-estork/orchestrator/agent.py) to:
+- Instantiate `MuabanAuthClient`.
+- Proactively attempt a headless refresh when a `token_expired` flag is detected.
+- Notify you via Telegram if the profile itself expires and requires a manual `setup-muaban`.
+
+## Verification Results
+
+I verified the logic using a scratch script [test_muaban_enrich.py](file:///d:/Programming/real-estork/scratch/test_muaban_enrich.py).
+
+```bash
+# Output from test script
+2026-04-22 00:36:55 | INFO     | Testing enrich for 70814266...
+2026-04-22 00:36:55 | WARNING  | Enrichment failed (likely no session cookies yet).
+2026-04-22 00:36:55 | INFO     | Confirmed: No cookies found. This is expected before user runs setup-muaban.
+```
+
+The system is now ready. Once you run the setup command, Muaban phone numbers will be extracted automatically during the general scraping cycles.

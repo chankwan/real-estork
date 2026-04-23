@@ -1,0 +1,9 @@
+- [x] Update `notifications/telegram.py`
+    - [x] Add `message_thread_id` to `send_listing_alert`
+    - [x] Add platform hashtags to `_format_listing_message`
+- [x] Update `orchestrator/agent.py`
+    - [x] Add platform-to-topic mapping
+    - [x] Pass `message_thread_id` to `send_listing_alert` based on source
+- [x] Verification
+    - [x] Code review
+    - [x] Dry run check (message formatting verified)

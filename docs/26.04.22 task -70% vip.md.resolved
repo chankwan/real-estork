@@ -1,0 +1,3 @@
+- [x] Refine early-stop breakout logic in `spiders/batdongsan.py`
+- [x] Refine early-stop breakout logic in `spiders/muaban.py`
+- [x] Verify logic changes via manual code trace

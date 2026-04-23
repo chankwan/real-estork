@@ -1,0 +1,13 @@
+# Task: VIP-aware Early-Stop + Telegram Boost Dedup
+
+## Part 1: VIP-aware Early-Stop
+- [ ] 1.1 `spiders/base.py` — Thêm `is_vip: bool = False` vào RawListing
+- [ ] 1.2 `spiders/batdongsan.py` — Cập nhật docstring v3→v4
+- [ ] 1.3 `spiders/batdongsan.py` — `_parse_list_card`: bỏ VIP hard-skip, tag is_vip
+- [ ] 1.4 `spiders/batdongsan.py` — `fetch_listings` loop: VIP-aware early-stop logic
+- [ ] 1.5 `spiders/batdongsan.py` — Cập nhật log message
+
+## Part 2: Telegram Boost Dedup
+- [ ] 2.1 `orchestrator/agent.py` — Query existing_status 1 lần ở đầu _process_listing
+- [ ] 2.2 `orchestrator/agent.py` — Preserve alerted status khi upsert
+- [ ] 2.3 `orchestrator/agent.py` — Skip re-alert nếu đã alerted

@@ -1,0 +1,37 @@
+# Refine Early-Stop Breakout Logic
+
+The current 70% duplication breakout logic incorrectly includes VIP/Prioritized listings in the hit-rate calculation. Since VIP listings are often pinned or re-pushed, they can appear as "duplicates" across multiple days, triggering a premature exit even when new "Normal" listings might exist on deeper pages.
+
+## User Review Required
+
+> [!IMPORTANT]
+> This change will likely increase the crawl depth for some sessions (potentially hitting more pages) because the "70% dup" barrier is now harder to trigger when VIPs are present. This should result in capturing more "Normal today" listings that were previously missed.
+
+## Proposed Changes
+
+### Spiders
+
+---
+
+#### [MODIFY] [batdongsan.py](file:///d:/Programming/real-estork/spiders/batdongsan.py)
+
+Update `fetch_listings` loop:
+- Track `page_normal_count` and `page_normal_dedup_hit` separately from VIP.
+- Calculate the breakout ratio based ONLY on Normal listings.
+- Ensure that if a page contains only VIP listings, the duplication-based breakout is not triggered.
+
+#### [MODIFY] [muaban.py](file:///d:/Programming/real-estork/spiders/muaban.py)
+
+Update `fetch_listings` loop (similar to Batdongsan):
+- Isolate duplication counting to `is_vip=False` listings.
+- Adjust the breakout condition to use the Normal listing duplication rate.
+
+## Verification Plan
+
+### Automated Tests
+- I will perform a dry-run of the logic (manual code review and trace) to ensure the counters are incremented correctly.
+- Since live crawling depends on Cloudflare bypasses and real data, validation will primarily be through log inspection once deployed.
+
+### Manual Verification
+- Verify that `logger.info` output for each page correctly shows the separated counts (e.g., "Normal dups: X/Y").
+- Observe if the spider now crawls beyond page 1/2 when those pages are dominated by old VIP listings.

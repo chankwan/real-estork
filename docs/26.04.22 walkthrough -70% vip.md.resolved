@@ -1,0 +1,31 @@
+# Walkthrough — Refined Breakout Logic
+
+I have updated the early-stop mechanism for both Batdongsan and Muaban spiders to ensure that VIP listings do not trigger premature crawl exits.
+
+## Changes Made
+
+### Spiders
+
+#### [batdongsan.py](file:///d:/Programming/real-estork/spiders/batdongsan.py)
+- **Isolated Duplication Counters**: Introduced `page_normal_count` and `page_normal_dedup_hit` to track duplication metrics only for non-VIP listings.
+- **Improved Breakout Logic**: The spider now only breaks based on duplication hit-rate if `normal_count > 0`. If a page is entirely VIP listings, it will continue to the next page to look for new normal listings.
+- **Descriptive Logging**: Updated logs to show the duplication rate specifically for normal listings (e.g., `normal_dedup_hit=14/20`).
+
+#### [muaban.py](file:///d:/Programming/real-estork/spiders/muaban.py)
+- **Unified Logic**: Applied the same logic as Batdongsan, ensuring VIP listings are skipped or continued without affecting the duplication-based breakout trigger.
+- **Fix**: Previously, `page_dedup_hit` was a global count per page, which caused the issues you observed.
+
+## Verification Results
+
+The logic has been manually traced:
+1. **Scenario: Page 1 is 100% VIP (all dups)**
+   - `page_normal_count` will be 0.
+   - `normal_dedup_hit / page_normal_count` will not be calculated.
+   - Spider **continues** to Page 2. (Fixed!)
+2. **Scenario: Page 2 has 5 Normal listings (4 dups)**
+   - `page_normal_count` = 5.
+   - `page_normal_dedup_hit` = 4.
+   - Hit-rate = 80% (> 70%).
+   - Spider **breaks** correctly as it has reached "old news" in the normal stream.
+
+This ensures you won't miss any "Normal today" listings buried under a mountain of old VIP ads.

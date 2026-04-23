@@ -1,0 +1,173 @@
+# RealEstork — Batdongsan-specific Scoring Config
+# Derived from config/scoring.yaml. Loaded automatically by ClassificationPipeline
+# for any listing where source == "batdongsan".
+#
+# Rationale (see CLAUDE.md session 5):
+#   - Batdongsan thiếu 3 nhatot-specific signals (phone_hidden_owner,
+#     account_type_personal, account_type_business) → thresholds nới lỏng
+#   - Thêm 5 signals BDS-specific dùng data từ guru profile + pro-agent badge
+#   - photo_count_* không fire vì list page chỉ có 1-2 thumbnail
+#   - Post-early-stop đã chỉ lấy tin "hôm nay" → listing_very_fresh/fresh luôn fire
+
+version: 1
+threshold_chinh_chu: 60         # nới từ 65 → 60 (thiếu 3 nhatot-only signals)
+threshold_can_xac_minh: 38      # nới từ 40 → 38
+
+base_score: 50
+
+alert_filters:
+  wife_max_listing_age_hours: 24
+  wife_min_score: 52             # Nới 55 → 52 theo thresholds mới
+  wife_min_price_vnd: 20000000
+  product_min_score: 60
+  wife_allowed_districts:
+    - "Quận 1"
+    - "Quận 2"
+    - "Quận 3"
+    - "Quận 4"
+    - "Quận 5"
+    - "Quận 6"
+    - "Quận 7"
+    - "Quận 8"
+    - "Quận 9"
+    - "Quận 10"
+    - "Quận 11"
+    - "Bình Thạnh"
+    - "Phú Nhuận"
+    - "Tân Bình"
+    - "Thủ Đức"
+    - "Gò Vấp"
+
+signals:
+  # ===================================================
+  # BDS-SPECIFIC SIGNALS (from guru profile + detail page)
+  # ===================================================
+
+  bds_broker_multi_active_listings:
+    description: "Guru profile: >5 tin đăng đang có → broker (ngưỡng user approve)"
+    weight: -30
+    check: "poster_profile_hash is not None and poster_total_listings > 5"
+
+  bds_owner_few_active_listings:
+    description: "Guru profile: 1-5 tin đăng → chủ có ít BĐS; stacks với single_listing khi active==1"
+    weight: +15
+    check: "poster_profile_hash is not None and 1 <= poster_total_listings <= 5"
+
+  bds_owner_single_listing:
+    description: "Guru profile: đúng 1 tin đăng → strongest chính chủ signal, stack với few_active"
+    weight: +10
+    check: "poster_profile_hash is not None and poster_total_listings == 1"
+
+  poster_join_year_veteran:
+    description: "Tham gia >= 3 năm — signal phụ, thường stack với multi-listings (broker lâu năm)"
+    weight: -10
+    check: "poster_join_year <= now.year - 3"
+
+  detail_has_pro_agent_badge:
+    description: "Badge 'Môi giới chuyên nghiệp' — hard broker signal, ép classify môi giới"
+    weight: -40
+    check: "has_pro_agent_badge == True"
+
+  # ===================================================
+  # TEXT-BASED SIGNALS (description fetched from detail page)
+  # ===================================================
+
+  text_owner_language:
+    description: "Description ngôn ngữ chính chủ — môi giới hay giả danh claim này"
+    weight: +5
+
+  text_marketing_superlatives:
+    description: "Description marketing phóng đại — broker pattern"
+    weight: -20
+
+  text_commission_mention:
+    description: "Description nhắc hoa hồng — rõ môi giới"
+    weight: -15
+
+  text_agent_language:
+    description: "Ngôn ngữ đặc trưng môi giới"
+    weight: -10
+
+  # ===================================================
+  # POSTING PATTERN SIGNALS
+  # ===================================================
+
+  posted_outside_business_hours:
+    description: "Đăng ngoài giờ hành chính — chủ nhà đăng sau giờ làm"
+    weight: +5
+
+  account_name_broker_keywords:
+    description: "Tên tài khoản chứa từ khóa môi giới — BDS có nhiều 'Quỳnh Hương BĐS'"
+    weight: -25          # tune mạnh hơn so với default (-20)
+
+  same_session_multi_listing:
+    description: "Cùng 1 tài khoản đăng >2 tin/batch — broker pattern"
+    weight: -30          # tune mạnh hơn (-20 → -30) do BDS VIP đã skip
+
+  # ===================================================
+  # LISTING AGE SIGNALS (post-early-stop luôn 'hôm nay')
+  # ===================================================
+
+  listing_very_fresh:
+    description: "Tin mới <= 2h — instant alert priority"
+    weight: +10
+
+  listing_fresh:
+    description: "Tin 2-24h"
+    weight: +5
+
+  listing_stale:
+    description: "Tin cũ > 7 ngày — không xảy ra sau early-stop, nhưng giữ để defensive"
+    weight: -15
+
+  # ===================================================
+  # FLOOR LEVEL SIGNALS
+  # ===================================================
+
+  floor_ground_level:
+    description: "Tầng trệt — cao nhất về nhu cầu"
+    weight: +8
+
+  floor_ambiguous:
+    description: "Không rõ tầng — chính chủ thường lazy"
+    weight: +3
+
+  floor_upper_level:
+    description: "Lầu 3+ — ít nhu cầu"
+    weight: -5
+
+  # ===================================================
+  # DESCRIPTION QUALITY SIGNALS
+  # ===================================================
+
+  description_no_diacritics:
+    description: "Viết không dấu — chủ nhà gõ nhanh"
+    weight: +10
+
+  description_too_short:
+    description: "Mô tả < 50 chars — chính chủ qua loa"
+    weight: +5
+
+  description_medium:
+    description: "Mô tả 50-300 chars — balanced"
+    weight: 0
+
+  description_too_long:
+    description: "Mô tả > 500 chars — copy-paste marketing"
+    weight: -5
+
+  description_many_emojis:
+    description: "Nhiều emoji (>=5) — format marketing môi giới"
+    weight: -15
+
+  photo_count_low:
+    description: "Ít ảnh (<= 5) — style amateur. List page BDS thường chỉ 1-2 thumbnail nên hay fire"
+    weight: +3           # giảm từ +5 vì dễ fire cho mọi tin
+
+  # ===================================================
+  # AI SIGNAL (optional supplement)
+  # ===================================================
+
+  ai_classification:
+    description: "LLM phân tích text + metadata"
+    weight: 30

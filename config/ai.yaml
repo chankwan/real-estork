@@ -1,0 +1,78 @@
+# RealEstork — AI Model Configuration (4-tier)
+# Switch model: edit file → restart scheduler (không redeploy)
+# Hoặc CLI: realestork ai switch <provider/model>
+
+ai:
+  # =========================================================
+  # CHỌN 1 TIER — Uncomment tier muốn dùng, comment tier khác
+  # =========================================================
+
+  # === TIER 4: Local GPU — Ollama (DEFAULT cho MVP, free + offline) ===
+  # provider: "ollama"
+  # ollama:
+  #   base_url: "http://localhost:11434"
+  #   model: "gemma4:e4b"           # DEFAULT — newest, multimodal, 128K ctx
+  #   # model: "gemma4:e2b"         # Lighter (4GB VRAM)
+  #   # model: "qwen2.5:7b"         # Strong Vietnamese
+  #   # model: "phi3:mini"          # Lightest (3GB)
+  #   # model: "llama3.1:8b"        # General purpose
+  #   # model: "gemma3:4b"          # Fallback
+
+  # === TIER 1: Free — openclaw-zero-token (web chat gateway) ===
+  provider: "zero-token"
+  zero_token:
+    base_url: "http://localhost:3001/v1"
+    api_key: "any-string"       # zero-token doesn't validate key
+    model: "gemini-web/gemini-pro"           # ← đang dùng
+    # model: "deepseek-web/deepseek-chat"   # Free unlimited
+    # model: "qwen-web/qwen-max"            # Free tier
+    # model: "kimi-web/kimi-chat"           # Free
+    # model: "glm-web/glm-4"               # Free
+    # model: "doubao-web/doubao-seed-2.0"   # Free
+
+  # === TIER 2: $20/mo via zero-token ===
+  # provider: "zero-token"
+  # zero_token:
+  #   base_url: "http://localhost:3001/v1"
+  #   model: "chatgpt-web/gpt-4o"              # ChatGPT Plus sub
+  #   # model: "gemini-web/gemini-1.5-pro"     # Gemini Pro sub
+
+  # === TIER 3: Pay per token — API trực tiếp ===
+  # provider: "anthropic"
+  # anthropic:
+  #   model: "claude-haiku-4-5-20251001"       # $0.25/1M input tokens
+  #   api_key_env: "ANTHROPIC_API_KEY"         # loads from .env
+
+  # provider: "openai"
+  # openai:
+  #   model: "gpt-4o-mini"
+  #   api_key_env: "OPENAI_API_KEY"
+
+  # =========================================================
+  # COMMON SETTINGS
+  # =========================================================
+  temperature: 0.1
+  max_tokens: 300
+  timeout_seconds: 30
+  fallback_to_rules_on_error: true    # Nếu AI fail → dùng rules only, không crash
+
+  # Prompt template — editable, không cần redeploy
+  classification_prompt: |
+    Bạn là chuyên gia phân tích tin đăng bất động sản cho thuê tại Việt Nam.
+    Cho tin đăng sau, hãy đánh giá khả năng người đăng là CHÍNH CHỦ (chủ nhà thật sự)
+    hay MÔI GIỚI (broker/agent).
+
+    Tiêu đề: {title}
+    Mô tả: {description}
+    SĐT: {phone}
+    Số ảnh: {photo_count}
+    Tầng: {floor_level}
+    Tin đăng {listing_age_hours} giờ trước
+    Platform: {source}
+
+    Trả lời CHÍNH XÁC theo format JSON (không thêm text khác):
+    {{
+      "is_owner_probability": 0.0-1.0,
+      "reasoning": "giải thích ngắn 1-2 câu bằng tiếng Việt",
+      "signals_detected": ["signal1", "signal2"]
+    }}
