@@ -114,6 +114,30 @@ class SupabaseDB:
         import re
         return bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', val.lower()))
 
+    def get_phone_trangtrang_report_count(self, phone: str) -> int:
+        """Return highest trangtrang spam report count seen for this phone from cached OSINT. 0 = unknown/clean."""
+        if not phone:
+            return 0
+        try:
+            result = (
+                self.client.table("listings")
+                .select("osint_result")
+                .eq("phone", phone)
+                .not_.is_("osint_result", "null")
+                .order("created_at", desc=True)
+                .limit(3)
+                .execute()
+            )
+            max_count = 0
+            for row in result.data or []:
+                osint = row.get("osint_result") or {}
+                count = osint.get("trangtrang_report_count") or 0
+                if count > max_count:
+                    max_count = count
+            return max_count
+        except Exception:
+            return 0
+
     def get_listing_status(self, source: str, source_id: str) -> str | None:
         """Return the current status of a listing, or None if not found."""
         try:

@@ -55,6 +55,8 @@ class SignalContext:
     avatar_url: str | None = None
     is_main_street: bool | None = None      # True=mặt tiền, False=hẻm, None=unknown
 
+    # Phone spam reputation (from trangtrang DB cache)
+    trangtrang_report_count: int = 0        # Number of spam reports on trangtrang.com (0 = unknown/clean)
 
     # AI result (optional, filled async)
     ai_owner_probability: float | None = None
@@ -114,6 +116,7 @@ class SignalContext:
             is_vip=getattr(listing, "is_vip", False),
             avatar_url=getattr(listing, "avatar_url", None),
             is_main_street=getattr(listing, "is_main_street", None),
+            trangtrang_report_count=stats.get("trangtrang_report_count", 0),
         )
 
 
@@ -377,6 +380,10 @@ def check_ai_classification(ctx: SignalContext) -> float:
     return float(ctx.ai_owner_probability)
 
 
+def check_trangtrang_spam_penalty(ctx: SignalContext) -> bool:
+    """Phone has 5+ spam reports on trangtrang.com — strong spam/broker indicator."""
+    return ctx.trangtrang_report_count >= 5
+
 # Map signal names (from YAML) to check functions
 SIGNAL_FUNCTIONS: dict[str, Any] = {
     "phone_single_listing": check_phone_single_listing,
@@ -419,5 +426,6 @@ SIGNAL_FUNCTIONS: dict[str, Any] = {
     "listing_is_vip": check_listing_is_vip,
     "muaban_multi_active_listings": check_muaban_multi_active_listings,
     "muaban_few_active_listings": check_muaban_few_active_listings,
+    "trangtrang_spam_penalty": check_trangtrang_spam_penalty,
     "ai_classification": check_ai_classification,
 }

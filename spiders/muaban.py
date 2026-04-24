@@ -420,9 +420,13 @@ class MuabanSpider(BaseSpider):
         if not t:
             return None
         try:
-            if "giờ trước" in t or "phút trước" in t:
-                return now_vn.astimezone(timezone.utc)
-            if "hôm nay" in t:
+            m = re.search(r"(\d+)", t)
+            n = int(m.group(1)) if m else 0
+            if "phút trước" in t:
+                return (now_vn - timedelta(minutes=n)).astimezone(timezone.utc)
+            if "giờ trước" in t:
+                return (now_vn - timedelta(hours=n)).astimezone(timezone.utc)
+            if "hôm nay" in t or "vừa đăng" in t:
                 return now_vn.astimezone(timezone.utc)
             if "hôm qua" in t:
                 return (now_vn - timedelta(days=1)).astimezone(timezone.utc)

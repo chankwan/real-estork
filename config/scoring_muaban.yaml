@@ -39,6 +39,10 @@ signals:
   listing_stale:
     weight: -15   # > 7 ngày (phòng trường hợp VIP pin lâu)
 
+  # Phone spam reputation
+  trangtrang_spam_penalty:
+    weight: -30   # Muaban có nhiều spam hơn → weight cao hơn default
+
   # Other default signals to keep
   account_name_broker_keywords:
     weight: -30

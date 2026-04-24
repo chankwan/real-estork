@@ -202,6 +202,10 @@ signals:
     weight: -15
     check: "listing_age_hours != None and listing_age_hours > 168"
 
+  trangtrang_spam_penalty:
+    description: "SĐT có >= 5 báo cáo spam/scam trên trangtrang.com — môi giới hoặc lừa đảo"
+    weight: -25
+
   # ===================================================
   # FLOOR LEVEL SIGNALS [ADDED v2.1]
   # ===================================================

@@ -148,9 +148,9 @@ class TelegramNotifier:
 
         contact_part = f" ({e(listing.contact_name)})" if listing.contact_name else ""
 
-        prop_header = f" | {prop_label}" if prop_label else ""
+        prop_line = f"\n{prop_emoji} <b>{prop_label}</b>" if prop_label else ""
         msg = textwrap.dedent(f"""
-            <b>{prop_emoji} {badge} {label_text} (Score: {result.score}){prop_header}</b>
+            <b>{badge} {label_text} (Score: {result.score})</b>{prop_line}
 
             📍 <i>{e(listing.address or '')}</i>
             💰 <b>{e(price_text)}</b>{area_text}{floor_text}{street_tag}

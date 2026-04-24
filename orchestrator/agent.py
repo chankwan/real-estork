@@ -250,6 +250,10 @@ class RealEstorkAgent:
             phone_stats = self.db.get_phone_stats(listing.phone)
             if self.db.is_known_broker(listing.phone):
                 phone_stats["is_known_broker"] = True
+            # Trangtrang spam cache — inject before classification so penalty fires immediately
+            spam_count = self.db.get_phone_trangtrang_report_count(listing.phone)
+            if spam_count > 0:
+                phone_stats["trangtrang_report_count"] = spam_count
 
         # AI Classification computation
         ai_result = None
@@ -260,9 +264,12 @@ class RealEstorkAgent:
 
         # Classify — single pass (active count already known from detail page)
         result = self.classifier.classify(listing, phone_stats=phone_stats, ai_result=ai_result)
+        age_str = f"{listing.listing_age_hours:.1f}h" if listing.listing_age_hours is not None else "?h"
+        signals_str = " ".join(f"{k}:{v:+d}" for k, v in result.signals_fired.items()) if result.signals_fired else "none"
         logger.info(
             f"[orchestrator] {listing.source}/{listing.source_id}: "
-            f"score={result.score} label={result.label} active={active_count}"
+            f"score={result.score} label={result.label} age={age_str} "
+            f"active={active_count} signals=[{signals_str}]"
         )
 
         # OSINT (only for listings worth investigating: score >= 50)
