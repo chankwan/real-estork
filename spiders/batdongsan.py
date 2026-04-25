@@ -110,10 +110,11 @@ class BatdongsanSpider(BaseSpider):
     async def fetch_listings(self) -> list[RawListing]:
         try:
             from scrapling import StealthyFetcher
-        except ImportError:
+        except ImportError as e:
             logger.error(
-                "[batdongsan] scrapling chưa cài. "
-                "Chạy: pip install scrapling camoufox && python -m camoufox fetch"
+                f"[batdongsan] StealthyFetcher import failed ({type(e).__name__}: {e}). "
+                "Fix: pip install -r requirements.txt && "
+                "venv/Scripts/scrapling.exe install"
             )
             return []
 

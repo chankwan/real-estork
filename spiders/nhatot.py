@@ -45,10 +45,11 @@ class NhatotSpider(BaseSpider):
         """Fetch listings using StealthyFetcher + __NEXT_DATA__ extraction."""
         try:
             from scrapling import StealthyFetcher
-        except ImportError:
+        except ImportError as e:
             logger.error(
-                "[nhatot] scrapling not installed. "
-                "Run: pip install scrapling camoufox && python -m camoufox fetch"
+                f"[nhatot] StealthyFetcher import failed ({type(e).__name__}: {e}). "
+                "Fix: pip install -r requirements.txt && "
+                "venv/Scripts/scrapling.exe install"
             )
             return []
 

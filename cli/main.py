@@ -12,6 +12,7 @@ Commands:
   mark <id> <status>         Mark listing status (called/owner/broker)
   digest                     Send daily digest now
   start                      Start the full orchestrator
+  doctor                     Health check (deps, .env, browser binaries)
 """
 
 from __future__ import annotations
@@ -400,6 +401,176 @@ def start_orchestrator(
         await agent.start()
 
     asyncio.run(_run())
+
+
+@app.command("doctor")
+def doctor() -> None:
+    """Pre-flight health check: deps, browser binaries, .env, services."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    OK = "[green][OK][/green]"
+    FAIL = "[red][X][/red]"
+    WARN = "[yellow][!][/yellow]"
+
+    failures = 0
+    warnings = 0
+
+    def _check(label: str, ok: bool, fix_msg: str | None = None, *, warn: bool = False) -> None:
+        nonlocal failures, warnings
+        if ok:
+            console.print(f"  {OK} {label}")
+        elif warn:
+            console.print(f"  {WARN} {label}")
+            if fix_msg:
+                console.print(f"       [dim]→ {fix_msg}[/dim]")
+            warnings += 1
+        else:
+            console.print(f"  {FAIL} {label}")
+            if fix_msg:
+                console.print(f"       [dim]→ Sửa: {fix_msg}[/dim]")
+            failures += 1
+
+    console.print("\n[bold cyan]RealEstork Doctor — Health Check[/bold cyan]\n")
+
+    # 1. Python version
+    console.print("[bold]1. Python[/bold]")
+    py = sys.version_info
+    _check(
+        f"Python {py.major}.{py.minor}.{py.micro}",
+        py >= (3, 12),
+        "cần Python 3.12+. Tải: https://www.python.org/downloads/",
+    )
+
+    # 2. Critical Python packages
+    console.print("\n[bold]2. Python packages[/bold]")
+    required_pkgs = [
+        ("scrapling", "pip install -r requirements-lock.txt"),
+        ("patchright", "pip install patchright (hoặc pip install scrapling[fetchers])"),
+        ("msgspec", "pip install msgspec"),
+        ("camoufox", "pip install camoufox[geoip]"),
+        ("playwright", "pip install playwright"),
+        ("supabase", "pip install supabase"),
+        ("telegram", "pip install python-telegram-bot"),
+        ("apscheduler", "pip install apscheduler"),
+        ("loguru", "pip install loguru"),
+        ("yaml", "pip install pyyaml"),
+        ("dotenv", "pip install python-dotenv"),
+    ]
+    for mod, fix in required_pkgs:
+        spec = importlib.util.find_spec(mod)
+        _check(f"{mod}", spec is not None, fix)
+
+    # 3. Browser binaries
+    console.print("\n[bold]3. Browser binaries[/bold]")
+    try:
+        spec = importlib.util.find_spec("scrapling")
+        if spec is not None:
+            from scrapling import StealthyFetcher  # noqa: F401
+            _check("StealthyFetcher import", True)
+        else:
+            _check("StealthyFetcher import", False, "venv/Scripts/scrapling.exe install")
+    except ImportError as e:
+        _check(
+            "StealthyFetcher import",
+            False,
+            f"({type(e).__name__}: {e}) → venv/Scripts/scrapling.exe install",
+        )
+
+    # Camoufox browser binary path
+    try:
+        from camoufox.pkgman import installed_verstr
+        ver = installed_verstr()
+        _check(f"Camoufox browser binary (version {ver})", True)
+    except Exception:
+        _check(
+            "Camoufox browser binary",
+            False,
+            "venv/Scripts/python.exe -m camoufox fetch",
+            warn=True,
+        )
+
+    # 4. .env file + critical keys
+    console.print("\n[bold]4. Cấu hình .env[/bold]")
+    env_path = Path(".env")
+    if not env_path.exists():
+        _check(
+            ".env file",
+            False,
+            "copy .env.example .env && điền tokens",
+        )
+    else:
+        _check(".env file tồn tại", True)
+        critical_keys = [
+            ("SUPABASE_URL", "URL Supabase project"),
+            ("SUPABASE_SERVICE_KEY", "Supabase service role key"),
+            ("TELEGRAM_BOT_TOKEN", "Token bot Telegram (lấy từ @BotFather)"),
+            ("TELEGRAM_ADMIN_CHAT_ID", "Chat ID cá nhân để nhận admin alerts"),
+        ]
+        for key, desc in critical_keys:
+            val = os.getenv(key, "").strip()
+            has_val = bool(val) and not val.startswith("your-")
+            _check(f"{key}", has_val, f"điền vào .env: {desc}")
+
+        optional_keys = [
+            ("TELEGRAM_GROUP_CHAT_ID", "Group chat (vợ chồng cùng xem)"),
+        ]
+        for key, desc in optional_keys:
+            val = os.getenv(key, "").strip()
+            has_val = bool(val) and not val.startswith("your-")
+            _check(f"{key} (optional)", has_val, f"không bắt buộc — {desc}", warn=True)
+
+    # 5. Config files
+    console.print("\n[bold]5. Config files[/bold]")
+    for cfg in ("config/spiders.yaml", "config/scoring.yaml", "config/schedule.yaml"):
+        _check(cfg, Path(cfg).exists(), f"thiếu file {cfg} — git pull lại")
+
+    # 6. Supabase connectivity
+    console.print("\n[bold]6. Kết nối services[/bold]")
+    try:
+        from db.client import SupabaseDB
+        db = SupabaseDB()
+        db.client.table("listings").select("id").limit(1).execute()
+        _check("Supabase reachable", True)
+    except Exception as e:
+        _check(
+            "Supabase reachable",
+            False,
+            f"kiểm tra SUPABASE_URL/SUPABASE_SERVICE_KEY trong .env ({type(e).__name__}: {e})",
+        )
+
+    # 7. Telegram bot token
+    try:
+        import httpx
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        if not token:
+            _check("Telegram bot token", False, "điền TELEGRAM_BOT_TOKEN vào .env")
+        else:
+            r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
+            ok = r.status_code == 200 and r.json().get("ok") is True
+            _check(
+                "Telegram bot token hợp lệ",
+                ok,
+                "token sai hoặc bot bị revoke. Tạo lại qua @BotFather",
+            )
+    except Exception as e:
+        _check("Telegram bot token", False, f"không gọi được Telegram API ({e})", warn=True)
+
+    # Summary
+    console.print()
+    if failures == 0 and warnings == 0:
+        console.print("[bold green]✓ Tất cả check đều OK. Bot sẵn sàng chạy.[/bold green]")
+        console.print("[dim]Chạy: bot start[/dim]\n")
+    elif failures == 0:
+        console.print(f"[yellow]⚠ {warnings} cảnh báo nhưng không fatal. Bot vẫn chạy được.[/yellow]\n")
+    else:
+        console.print(
+            f"[bold red]✗ {failures} lỗi cần sửa[/bold red]"
+            + (f" + {warnings} cảnh báo" if warnings else "")
+            + ". Sửa theo hướng dẫn ở trên rồi chạy lại: [cyan]bot doctor[/cyan]\n"
+        )
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

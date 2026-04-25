@@ -2,8 +2,11 @@
 # Python 3.12+
 
 # === Core Scraping ===
-scrapling>=0.2.9           # Adaptive selectors, StealthyFetcher, DynamicFetcher
-camoufox[geoip]            # Required by Scrapling StealthyFetcher
+# After install: run `venv/Scripts/scrapling.exe install` to fetch browser binaries.
+scrapling[fetchers]>=0.4.0 # Adaptive selectors, StealthyFetcher (extras pulls patchright + msgspec + protego)
+patchright>=1.58.0         # Playwright fork with stealth patches — required by StealthyFetcher
+msgspec>=0.21.0            # Used by scrapling validators (not auto-pulled in some envs)
+camoufox[geoip]>=0.4.0     # Camoufox Firefox engine
 requests>=2.31.0           # HTTP fallback, simple spiders
 aiohttp>=3.9.0             # Async HTTP
 
