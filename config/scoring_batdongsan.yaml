@@ -32,11 +32,20 @@ alert_filters:
     - "Quận 9"
     - "Quận 10"
     - "Quận 11"
+    - "Quận 12"
     - "Bình Thạnh"
     - "Phú Nhuận"
     - "Tân Bình"
+    - "Tân Phú"
+    - "Bình Tân"
     - "Thủ Đức"
     - "Gò Vấp"
+
+  # Per-district min price override — 3 quận xa hơn chỉ alert tin >= 40M
+  district_price_overrides:
+    "Quận 12": 40000000
+    "Tân Phú": 40000000
+    "Bình Tân": 40000000
 
 signals:
   # ===================================================

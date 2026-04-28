@@ -16,7 +16,7 @@ alert_filters:
   wife_min_price_vnd: 15000000     # Chỉ alert mặt bằng >= 15 triệu/tháng
   product_min_score: 65            # Alert sản phẩm aggregate khi >= 65
   # wife_main_street_only: true   # Chỉ alert mặt tiền (is_main_street=True). Bật khi muốn lọc gắt hơn.
-  wife_allowed_districts:          # Chỉ alert khu vực trung tâm TPHCM (empty = tất cả)
+  wife_allowed_districts:          # Chỉ alert khu vực nội thành TPHCM (empty = tất cả). Loại 5 huyện ngoại ô (Bình Chánh, Củ Chi, Hóc Môn, Nhà Bè, Cần Giờ)
     - "Quận 1"
     - "Quận 2"
     - "Quận 3"
@@ -28,11 +28,21 @@ alert_filters:
     - "Quận 9"
     - "Quận 10"
     - "Quận 11"
+    - "Quận 12"
     - "Bình Thạnh"
     - "Phú Nhuận"
     - "Tân Bình"
+    - "Tân Phú"
+    - "Bình Tân"
     - "Thủ Đức"
     - "Gò Vấp"
+
+  # Per-district min price override — chỉ alert tin >= 40M ở 3 quận xa hơn trung tâm.
+  # Các quận không liệt kê ở đây dùng wife_min_price_vnd (15M).
+  district_price_overrides:
+    "Quận 12": 40000000
+    "Tân Phú": 40000000
+    "Bình Tân": 40000000
 
 signals:
   # ===================================================

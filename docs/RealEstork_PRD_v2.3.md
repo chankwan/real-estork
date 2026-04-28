@@ -370,12 +370,24 @@ spiders:
 |---|---|---|---|
 | Score tối thiểu | ≥ 55 | ≥ 52 | ≥ 50 |
 | Tuổi tin tối đa | 24h | 24h | 24h |
-| Giá tối thiểu | 15M | 20M | 15M |
-| Quận | 16 quận trung tâm | 16 quận trung tâm | 16 quận trung tâm |
+| Giá tối thiểu (default) | 15M | 20M | 15M |
+| Quận | 19 quận nội thành | 19 quận nội thành | 19 quận nội thành |
 
-*Business view: Điểm 50 là "trung lập". Mỗi tín hiệu tốt (chủ nhà) cộng điểm, mỗi tín hiệu xấu (môi giới) trừ điểm. System alert khi tin đạt ngưỡng — tức là đã có nhiều tín hiệu tốt hơn xấu.*
+**Whitelist quận (19 quận nội thành — loại 5 huyện ngoại ô Bình Chánh / Củ Chi / Hóc Môn / Nhà Bè / Cần Giờ):**
+Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Bình Thạnh, Phú Nhuận, Tân Bình, Tân Phú, Bình Tân, Thủ Đức, Gò Vấp.
 
-> **Muốn thay đổi điều kiện lọc?** Ví dụ: chỉ nhận mặt tiền, nâng/hạ giá sàn, thêm/bớt quận → báo trực tiếp.
+**Per-district price override** (key `district_price_overrides` trong YAML):
+
+| Quận | Giá tối thiểu |
+|------|---------------|
+| Quận 12 | **40M** |
+| Tân Phú | **40M** |
+| Bình Tân | **40M** |
+| 16 quận còn lại | dùng default (15M / 20M / 15M tùy source) |
+
+*Business view: Điểm 50 là "trung lập". Mỗi tín hiệu tốt (chủ nhà) cộng điểm, mỗi tín hiệu xấu (môi giới) trừ điểm. System alert khi tin đạt ngưỡng — tức là đã có nhiều tín hiệu tốt hơn xấu. 3 quận xa hơn trung tâm dùng giá sàn cao hơn (40M) để filter tin nhỏ lẻ — chỉ alert mặt bằng giá trị thật.*
+
+> **Muốn thay đổi điều kiện lọc?** Ví dụ: chỉ nhận mặt tiền, nâng/hạ giá sàn, thêm/bớt quận, override giá theo quận khác → báo trực tiếp.
 
 ### 8.3 Bảng điểm chi tiết theo từng sàn
 
@@ -982,6 +994,19 @@ Ghi lại thay đổi thực tế theo từng phiên làm việc. Format: ngày 
 **Business:**
 - Workflow đa-PC (PC1 push → PC2 pull) giờ deterministic: `git clone` → double-click `setup-full.bat` → bot chạy được, không cần Claude debug install.
 - 80% lỗi setup giờ user tự sửa được qua `bot doctor`.
+
+---
+
+### Session 13 — 28/04/2026
+**Tech (district whitelist mở rộng + per-district price override):**
+- **Mở rộng whitelist 16 → 19 quận**: thêm Q12, Tân Phú, Bình Tân (2 tin score=100 chinh_chu hôm 28/04 bị reject "ngoài quận" — `nhatot/132087311` Tân Phú, `nhatot/132087583` Bình Tân). Loại 5 huyện ngoại ô (Bình Chánh, Củ Chi, Hóc Môn, Nhà Bè, Cần Giờ).
+- **Per-district price override** (key mới `district_price_overrides` trong `alert_filters` YAML): 3 quận mới (Q12, Tân Phú, Bình Tân) chỉ alert tin >= 40M (cao hơn default 15M/20M) để filter tin nhỏ lẻ ở vùng xa trung tâm.
+- **Code change** (`pipeline/classifier.py`): thêm helper `_min_price_for_district()` resolve override (district matching qua `_normalize_district`); gọi từ `should_alert_wife()` + `alert_skip_reason()`.
+- **YAML change** cả 3 source: `config/scoring.yaml`, `config/scoring_batdongsan.yaml`, `config/scoring_muaban.yaml`.
+
+**Business:**
+- 2 tin score=100 hôm 28/04 (Tân Phú nhà đất + Bình Tân mặt bằng kinh doanh) sẽ được alert sau cycle tiếp theo (giả định giá >= 40M — nếu không, vẫn skip).
+- Coverage tăng từ 16 quận lên 19 quận (toàn bộ nội thành HCMC). Vợ vẫn không bị spam tin từ vùng xa nhờ giá sàn 40M ở 3 quận thêm.
 
 ---
 

@@ -66,6 +66,15 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-04-28 (session 13) — District whitelist 19 quận + per-district price override
+- **Trigger**: 2 tin score=100 chinh_chu (`nhatot/132087311` Tân Phú nhà đất, `nhatot/132087583` Bình Tân mặt bằng kinh doanh) bị reject "ngoài quận" hôm 28/04. Cả 2 đều là tin chính chủ thật, miss alert.
+- **Fix YAML** cả 3 source (`config/scoring.yaml` + `scoring_batdongsan.yaml` + `scoring_muaban.yaml`):
+  - Whitelist 16 → 19 quận: thêm Q12, Tân Phú, Bình Tân. Loại 5 huyện ngoại ô (Bình Chánh, Củ Chi, Hóc Môn, Nhà Bè, Cần Giờ).
+  - Thêm `district_price_overrides` block: Q12/Tân Phú/Bình Tân chỉ alert tin >= 40M (filter tin nhỏ ở vùng xa).
+- **Fix code** (`pipeline/classifier.py`): thêm helper `_min_price_for_district(filters, district)` — resolve override qua `_normalize_district` matching. Update `should_alert_wife()` + `alert_skip_reason()` dùng helper thay vì đọc `wife_min_price_vnd` trực tiếp.
+- **Verify**: 7/7 unit test pass (Tân Phú 18M=gia_thap, Bình Tân 50M=pass, Quận 1 18M=pass, Bình Chánh 30M=ngoai_quan, etc.)
+- **Doc**: PRD §8.2 update bảng "Điều kiện alert" + thêm bảng `district_price_overrides`. Session 13 entry trong PRD changelog.
+
 ### 2026-04-28 (session 12) — Per-source scoring muaban
 - **Root cause**: 18 cycles × ~50 listings/ngày → **0 alert Telegram**. Trần điểm thực tế muaban = 50 (base) + 10 (very_fresh) − 10 (listing_is_vip) = 50 < `wife_min_score: 55` default. `account_type_personal:+25` chỉ fire cho nhatot.
 - **Fix `config/scoring_muaban.yaml`** (per-source config đã có sẵn, `PER_SOURCE_CONFIGS = ("batdongsan", "muaban")` ở `pipeline/classifier.py:21`):

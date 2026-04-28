@@ -209,6 +209,18 @@ class ClassificationPipeline:
             d = str(int(d))
         return d.strip()
 
+    def _min_price_for_district(self, filters: dict[str, Any], listing_district: str) -> int:
+        """Resolve min price: per-district override (from district_price_overrides) or fallback to wife_min_price_vnd."""
+        base = filters.get("wife_min_price_vnd", 0)
+        overrides = filters.get("district_price_overrides", {}) or {}
+        if not overrides:
+            return base
+        normalized_listing = self._normalize_district(listing_district or "")
+        for d, price in overrides.items():
+            if self._normalize_district(d) == normalized_listing:
+                return int(price)
+        return base
+
     def _alert_filters_for(self, source: str | None) -> dict[str, Any]:
         """Get alert_filters for source, falling back to default for missing keys."""
         default_filters = self._configs["_default"].get("alert_filters", {})
@@ -232,8 +244,8 @@ class ClassificationPipeline:
         if listing.listing_age_hours is not None and listing.listing_age_hours > max_age_hours:
             return False
 
-        # Price filter
-        min_price = filters.get("wife_min_price_vnd", 0)
+        # Price filter (per-district override if matched; else default wife_min_price_vnd)
+        min_price = self._min_price_for_district(filters, listing.district or "")
         if min_price and listing.price_vnd_monthly and listing.price_vnd_monthly < min_price:
             return False
 
@@ -270,7 +282,7 @@ class ClassificationPipeline:
             return result.label  # "moi_gioi" or "can_xac_minh"
         if listing.listing_age_hours is not None and listing.listing_age_hours > max_age_hours:
             return "tin_cu"
-        min_price = filters.get("wife_min_price_vnd", 0)
+        min_price = self._min_price_for_district(filters, listing.district or "")
         if min_price and listing.price_vnd_monthly and listing.price_vnd_monthly < min_price:
             return "gia_thap"
         allowed = filters.get("wife_allowed_districts", [])
