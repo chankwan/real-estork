@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import html
 import os
-import textwrap
 from typing import Any
 
 from dotenv import load_dotenv
@@ -148,17 +147,24 @@ class TelegramNotifier:
 
         contact_part = f" ({e(listing.contact_name)})" if listing.contact_name else ""
 
-        prop_line = f"\n{prop_emoji} <b>{prop_label}</b>" if prop_label else ""
-        msg = textwrap.dedent(f"""
-            <b>{badge} {label_text} (Score: {result.score})</b>{prop_line}
-
-            📍 <i>{e(listing.address or '')}</i>
-            💰 <b>{e(price_text)}</b>{area_text}{floor_text}{street_tag}
-
-            📞 <b>{e(phone_display)}</b>{contact_part}
-
-            <a href="{listing.source_url}">Xem ảnh &amp; chi tiết ({listing.source})</a>
-            """).strip()
+        # Build message as flat list of left-aligned lines.
+        # Avoid textwrap.dedent: nhúng prop_line (chứa \n) vào f-string sẽ phá
+        # common leading whitespace của dedent → các dòng sau bị thụt phải.
+        lines: list[str] = [
+            f"<b>{badge} {label_text} (Score: {result.score})</b>",
+        ]
+        if prop_label:
+            lines.append(f"{prop_emoji} <b>{prop_label}</b>")
+        lines.extend([
+            "",
+            f"📍 <i>{e(listing.address or '')}</i>",
+            f"💰 <b>{e(price_text)}</b>{area_text}{floor_text}{street_tag}",
+            "",
+            f"📞 <b>{e(phone_display)}</b>{contact_part}",
+            "",
+            f'<a href="{listing.source_url}">Xem ảnh &amp; chi tiết ({listing.source})</a>',
+        ])
+        msg = "\n".join(lines)
 
         # OSINT block
         if osint:
