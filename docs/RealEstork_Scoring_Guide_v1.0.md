@@ -1,6 +1,9 @@
 # RealEstork — Hướng dẫn cơ chế lọc & chấm điểm
-**Phiên bản:** v1.0 — 2026-04-22
+**Phiên bản:** v1.1 — 2026-04-28
 **Mục đích:** Giải thích cách hệ thống thu thập tin & chấm điểm chính chủ/môi giới để vợ có thể feedback tối ưu công thức.
+
+**Thay đổi v1.1 (2026-04-28):**
+- Muaban scoring tune lại sau 18 cycles không alert (session 12). Hạ ngưỡng chính chủ 65→60, alert vợ 55→50, bỏ penalty `Tin VIP` (mọi tin muaban đều VIP nên signal vô nghĩa), giảm `same_session_multi_listing` -20→-15.
 
 ---
 
@@ -175,7 +178,9 @@ Dù điểm cao, tin vẫn **không được gửi** nếu:
 
 ### Bảng điểm Muaban
 
-*Muaban dùng bộ chấm riêng vì thiếu một số tín hiệu, và có thêm tín hiệu đặc thù.*
+*Muaban dùng bộ chấm riêng (`config/scoring_muaban.yaml`) vì thiếu một số tín hiệu so với Nhatot, và có thêm tín hiệu đặc thù.*
+
+*Ngưỡng nới lỏng từ session 12 (2026-04-28): chính chủ ≥ 60 (thay vì 65), alert vợ ≥ 50 (thay vì 55). Bỏ penalty `Tin VIP` vì gần như mọi tin muaban đều VIP.*
 
 #### Dấu hiệu Chính chủ (cộng điểm)
 | Dấu hiệu | Điểm | Giải thích | Feedback? |
@@ -193,13 +198,16 @@ Dù điểm cao, tin vẫn **không được gửi** nếu:
 |----------|------|-----------|-----------|
 | **≥ 5 tin đăng** | -40 | Ngưỡng được duyệt | ⬅ Có quá gắt không? |
 | **Tên tài khoản chứa từ môi giới** | -30 | | |
+| **Cùng 1 người đăng > 2 tin/lần quét** | -15 | Giảm từ -20 (session 12): muaban có chủ 2-3 mặt bằng phổ biến | ⬅ Đúng thực tế không? |
 | **Mô tả marketing** | -20 | | |
-| **Tin VIP (trả phí đăng nổi bật)** | -10 | Nhẹ — chủ nhà cũng có thể mua VIP | |
 | **Nhắc hoa hồng** | -15 | | |
 | **Ngôn ngữ môi giới** | -10 | | |
 | **Nhiều emoji** | -15 | | |
 | **Mô tả quá dài** | -5 | | |
 | **Dùng ngôn ngữ "chính chủ"** | -5 | Muaban: môi giới hay giả danh claim này, nên trừ nhẹ | ⬅ Đồng ý không? |
+| **SĐT bị báo spam ≥ 5 lần trên trangtrang.com** | -30 | Mạnh hơn default (-25) — muaban nhiều spam phone | |
+
+> **Đã bỏ session 12 (2026-04-28):** Penalty `Tin VIP -10`. Lý do: gần như mọi tin muaban đều là VIP (muaban kiếm tiền chính bằng VIP boost), signal không discriminate được chính chủ vs môi giới.
 
 ---
 
@@ -212,8 +220,8 @@ Dù điểm cao, tin vẫn **không được gửi** nếu:
 | **Biết số tin đang đăng** | ✅ | ✅ | ❌ |
 | **Biết năm gia nhập** | ❌ | Một phần | ❌ |
 | **Mô tả đầy đủ** | ✅ | ✅ | ✅ |
-| **Ngưỡng chính chủ** | 65 | 60 | 65 |
-| **Alert vợ từ điểm** | 55 | 52 | 55 |
+| **Ngưỡng chính chủ** | 65 | 60 | 60 |
+| **Alert vợ từ điểm** | 55 | 52 | 50 |
 
 ---
 

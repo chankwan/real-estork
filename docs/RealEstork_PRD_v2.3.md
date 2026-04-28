@@ -830,6 +830,36 @@ Ghi lại thay đổi thực tế theo từng phiên làm việc. Format: ngày 
 
 ---
 
+### Session 11 — 25/04/2026
+**Tech (self-serve setup):**
+- **Root cause**: scrapling 0.4+ tách engine deps; `requirements.txt` pin `>=0.2.9` quá lỏng → fresh PC pull về thiếu `patchright`/`msgspec`/`protego` → spider chết với log misleading "scrapling not installed". Cài `pip install patchright msgspec protego` (qua `scrapling[fetchers]`).
+- **`requirements-lock.txt`** (107 packages, exact versions từ `pip freeze`) — eliminates deps lottery giữa PCs.
+- **`setup-full.bat`** — one-click: venv → lockfile → `scrapling install` → `playwright install firefox chromium` → .env scaffold → auto-run doctor.
+- **`bot doctor` command** (`cli/main.py`): pre-flight 25 checks (Python version, deps, browser binaries, .env keys, configs, Supabase reachable, Telegram token valid). Output tiếng Việt với câu lệnh fix copy-paste-ready cho từng failure.
+- **Error message bộc lộ root cause** (`spiders/{nhatot,batdongsan}.py`): `except ImportError as e:` + log `{type(e).__name__}: {e}` thay vì câu chung chung — module thiếu thật sự lộ ra ngay log.
+
+**Business:**
+- Workflow đa-PC (PC1 push → PC2 pull) giờ deterministic: `git clone` → double-click `setup-full.bat` → bot chạy được, không cần Claude debug install.
+- 80% lỗi setup giờ user tự sửa được qua `bot doctor`.
+
+---
+
+### Session 12 — 28/04/2026
+**Tech (per-source scoring muaban):**
+- **Diagnose**: 18 cycles muaban hôm 25/04 fetch ~50 listings → **0 alert**. Lý do: scoring system thiên vị nhatot, muaban không đạt ngưỡng. Trần điểm thực tế muaban = 50 (base) + 10 (very_fresh) - 10 (listing_is_vip áp gần như mọi tin) = **50** < ngưỡng `wife_min_score: 55` (default fall-back). `account_type_personal:+25` chỉ fire cho nhatot. `same_session_multi_listing:-20` quá gắt với muaban (chủ 2-3 mặt bằng phổ biến).
+- **Update `config/scoring_muaban.yaml`** (per-source config đã có sẵn, code tự load qua `PER_SOURCE_CONFIGS = ("batdongsan", "muaban")`):
+  - Thêm `alert_filters` block: `wife_min_score: 50`, `wife_max_listing_age_hours: 24`, `wife_min_price_vnd: 15000000`, `wife_allowed_districts` (16 quận trung tâm)
+  - Hạ thresholds: `chinh_chu` 65 → 60, `can_xac_minh` 40 → 38
+  - Bỏ `listing_is_vip` (mọi muaban đều VIP, signal không discriminate)
+  - Giảm `same_session_multi_listing` -20 → -15
+- **Doc updates**: Scoring Guide bump v1.0 → v1.1 với note thay đổi v12. PRD v2.3 thêm session entry.
+
+**Business:**
+- Muaban giờ có thể alert tin chính chủ (trần thực tế lên 80+ điểm với chính chủ điển hình).
+- Vợ sẽ nhận tin muaban trong 1-2 cycle tiếp theo (~30 phút).
+
+---
+
 ## 16. SUCCESS METRICS
 
 | Metric | Target | Trạng thái (24/04) |

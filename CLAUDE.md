@@ -66,6 +66,22 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-04-28 (session 12) — Per-source scoring muaban
+- **Root cause**: 18 cycles × ~50 listings/ngày → **0 alert Telegram**. Trần điểm thực tế muaban = 50 (base) + 10 (very_fresh) − 10 (listing_is_vip) = 50 < `wife_min_score: 55` default. `account_type_personal:+25` chỉ fire cho nhatot.
+- **Fix `config/scoring_muaban.yaml`** (per-source config đã có sẵn, `PER_SOURCE_CONFIGS = ("batdongsan", "muaban")` ở `pipeline/classifier.py:21`):
+  - Thêm `alert_filters` block (wife_min_score: 50, wife_max_listing_age_hours: 24, wife_min_price_vnd: 15M, 16 quận trung tâm)
+  - Hạ thresholds: chinh_chu 65→60, can_xac_minh 40→38
+  - Bỏ `listing_is_vip` (mọi muaban đều VIP, signal không discriminate)
+  - Giảm `same_session_multi_listing` -20 → -15 (muaban có chủ 2-3 mặt bằng phổ biến)
+- **Doc**: Scoring Guide v1.0 → v1.1 với note v12. PRD v2.3 thêm session 11+12.
+- **Verify**: `[classifier] Loaded muaban: 14 signals. Thresholds: chinh_chu>=60, can_xac_minh>=38` ở orchestrator startup. Alert vợ sẽ ra 1-2 cycle tiếp theo.
+
+### 2026-04-25 (session 11) — Self-serve setup (PC1→PC2 reproducible)
+- **Root cause**: scrapling 0.4+ tách engine deps; `requirements.txt` pin `>=0.2.9` quá lỏng → fresh PC pull về thiếu `patchright`/`msgspec`/`protego` → spider chết với log misleading "scrapling not installed".
+- **Fix install**: `pip install patchright msgspec protego` (qua `scrapling[fetchers]`).
+- **`requirements-lock.txt`** (107 packages, exact versions). `setup-full.bat` (one-click setup). `bot doctor` command (`cli/main.py`) — pre-flight 25 checks tiếng Việt với fix copy-paste-ready.
+- **Spider error message bộc lộ root cause**: `except ImportError as e:` + log `{type(e).__name__}: {e}` thay vì câu chung chung.
+
 ### 2026-04-22 (session 9) — Remove nhatot phone scraping (account banned)
 - **Chotot account bị ban**: `_NHATOT_RSA_PUBLIC_KEY`, `PHONE_API`, `_fetch_phone`, `_encrypt_list_id` xóa khỏi `spiders/nhatot.py`
 - **Orchestrator**: Xóa `_check_nhatot_token()` + `NhatotAuthClient` import. Spider nhatot giờ chỉ đọc `__NEXT_DATA__`, không cần token.

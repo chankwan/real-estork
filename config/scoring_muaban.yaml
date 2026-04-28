@@ -1,9 +1,43 @@
 # RealEstork — Muaban-specific Scoring
 # Strategy: Focus on profile transparency (avatar, total listings) and name patterns.
+#
+# Tuning history:
+#   - v1: muaban-specific signals (multi/few_active, avatar_blank, name_is_phone)
+#   - v2 (session 12 / 2026-04-28): hạ thresholds 65→60 / 40→38, thêm
+#     alert_filters block (wife_min_score 50), bỏ listing_is_vip penalty
+#     (mọi muaban đều VIP, signal không discriminate), giảm
+#     same_session_multi_listing -20 → -15.
+#     Lý do: 18 cycles × ~50 listings/ngày → 0 alert. Trần điểm thực tế = 60.
+#     wife_min_score thiếu trong file v1 → fall back default 55, max muaban
+#     đạt sau penalty thường chỉ 30-50 → không alert.
 
+version: 2
 base_score: 50
-threshold_chinh_chu: 65
-threshold_can_xac_minh: 40
+threshold_chinh_chu: 60         # nới 65 → 60 (thiếu 3 nhatot-only positive signals)
+threshold_can_xac_minh: 38      # nới 40 → 38
+
+alert_filters:
+  wife_max_listing_age_hours: 24
+  wife_min_score: 50             # nới 55 → 50 (cho phép can_xac_minh score=50 alert)
+  wife_min_price_vnd: 15000000   # giữ theo URL muaban (?price=15000000-)
+  product_min_score: 60
+  wife_allowed_districts:
+    - "Quận 1"
+    - "Quận 2"
+    - "Quận 3"
+    - "Quận 4"
+    - "Quận 5"
+    - "Quận 6"
+    - "Quận 7"
+    - "Quận 8"
+    - "Quận 9"
+    - "Quận 10"
+    - "Quận 11"
+    - "Bình Thạnh"
+    - "Phú Nhuận"
+    - "Tân Bình"
+    - "Thủ Đức"
+    - "Gò Vấp"
 
 signals:
   # Overrides for default signals
@@ -26,8 +60,7 @@ signals:
   account_name_is_phone:
     weight: +20  # Name is phone number = strong owner signal
 
-  listing_is_vip:
-    weight: -10  # Mild broker signal
+  # listing_is_vip: bỏ — muaban gần như mọi tin VIP, signal không discriminate
 
   # Time-based signals (critical: muaban chỉ crawl trong 24h nên luôn có data)
   listing_very_fresh:
@@ -48,7 +81,7 @@ signals:
     weight: -30
 
   same_session_multi_listing:
-    weight: -20   # >2 tin cùng account trong batch = broker
+    weight: -15   # giảm -20 → -15: muaban có chủ 2-3 mặt bằng phổ biến
 
   description_no_diacritics:
     weight: +15
