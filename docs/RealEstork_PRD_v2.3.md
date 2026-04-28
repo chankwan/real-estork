@@ -358,79 +358,220 @@ spiders:
 
 | Label | Nhatot | Batdongsan | Muaban |
 |---|---|---|---|
-| `chinh_chu` | score ≥ 65 | score ≥ 60 | score ≥ 65 |
-| `can_xac_minh` | score ≥ 40 | score ≥ 38 | score ≥ 40 |
-| `moi_gioi` | score < 40 | score < 38 | score < 40 |
+| `chinh_chu` | score ≥ 65 | score ≥ 60 | score ≥ 60 |
+| `can_xac_minh` | score ≥ 40 | score ≥ 38 | score ≥ 38 |
+| `moi_gioi` | score < 40 | score < 38 | score < 38 |
 
-*(BDS threshold nới vì thiếu `account_type_personal/business` signal. Muaban có signal riêng thay thế.)*
+*(BDS + Muaban threshold nới vì thiếu `account_type_personal/business` signal của Nhatot. Muaban có signals riêng thay thế.)*
 
 **Điều kiện alert Telegram:**
-- Score ≥ 55
-- Quận trong whitelist 16 quận trung tâm
-- Tuổi tin ≤ 24 giờ
 
-*Business view: Điểm 50 là "trung lập". Mỗi tín hiệu tốt (chủ nhà) cộng điểm, mỗi tín hiệu xấu (môi giới) trừ điểm. System alert khi tin đạt ≥55 — tức là đã có nhiều tín hiệu tốt hơn xấu.*
-
-### 8.3 Signals toàn bộ (24/04/2026)
-
-**Signals chung (tất cả platform):**
-
-| Signal | Weight | Điều kiện | Giải thích business |
+| | Nhatot | Batdongsan | Muaban |
 |---|---|---|---|
-| `listing_very_fresh` | +10 | Đăng ≤ 2 giờ | Tin mới nhất — alert ngay cho vợ |
-| `listing_fresh` | +5 | 2h < tuổi ≤ 24h | Tin hôm nay — vẫn còn cơ hội |
-| `listing_stale` | -15 | Tuổi > 7 ngày | Tin cũ — môi giới đẩy lên lại |
-| `text_owner_language` | +5 | "chính chủ", "nhà tôi"... | Ngôn ngữ chủ nhà — nhưng môi giới cũng giả danh nên weight thấp |
-| `text_marketing_superlatives` | -20 | "đắc địa", "siêu hot", "vị trí vàng"... | Ngôn ngữ bán hàng chuyên nghiệp = dấu hiệu môi giới |
-| `text_commission_mention` | -15 | "hoa hồng", "commission"... | Nói tới hoa hồng = công khai là môi giới |
-| `text_agent_language` | -10 | "hotline:", "zalo:", "chuyên BDS"... | Ngôn ngữ chuyên nghiệp của broker |
-| `account_name_broker_keywords` | -30 | Tên có "BĐS", "môi giới", "công ty"... | Tên tài khoản tố cáo môi giới |
-| `same_session_multi_listing` | -20 | Cùng tài khoản đăng > 2 tin/batch | 1 chủ nhà có thể có 2 mặt bằng, > 2 là môi giới |
-| `description_many_emojis` | -15 | > 5 emoji | Format marketing — chủ nhà thật không làm vậy |
-| `description_no_diacritics` | +15 | Viết không dấu / tỉ lệ dấu < 8% | Gõ nhanh trên điện thoại = chủ nhà thật |
-| `description_too_short` | +5 | Mô tả < 50 ký tự | Viết qua loa = chính chủ lười |
-| `description_too_long` | -5 | Mô tả > 500 ký tự | Copy-paste marketing |
-| `photo_count_low` | +5 | ≤ 5 ảnh | Chụp nhanh bằng điện thoại = chính chủ |
-| `photo_count_high` | -10 | ≥ 8 ảnh | Ảnh chuyên nghiệp = môi giới |
-| `posted_outside_business_hours` | +8 | Trước 8h hoặc sau 18h, cuối tuần | Chủ nhà đăng sau giờ làm |
-| `floor_ground_level` | +8 | Tầng trệt/tầng 1 | Tầng trệt giá trị nhất, chủ nhà nắm rõ |
-| `floor_ambiguous` | +3 | Không ghi tầng | Chính chủ thường không ghi kỹ |
-| `floor_upper_level` | -5 | Từ lầu 3 trở lên | Ít nhu cầu, thường văn phòng |
-| `trangtrang_spam_penalty` | -25 | SĐT có ≥ 5 báo cáo spam/scam trên trangtrang.com | Cộng đồng đã xác nhận spam |
-| `ai_classification` | weight 30 | AI phân tích mô tả → `is_owner_probability` (0–1) × 30 | AI đọc ngữ cảnh mà rules bỏ qua |
+| Score tối thiểu | ≥ 55 | ≥ 52 | ≥ 50 |
+| Tuổi tin tối đa | 24h | 24h | 24h |
+| Giá tối thiểu | 15M | 20M | 15M |
+| Quận | 16 quận trung tâm | 16 quận trung tâm | 16 quận trung tâm |
 
-**Signals nhatot-only:**
+*Business view: Điểm 50 là "trung lập". Mỗi tín hiệu tốt (chủ nhà) cộng điểm, mỗi tín hiệu xấu (môi giới) trừ điểm. System alert khi tin đạt ngưỡng — tức là đã có nhiều tín hiệu tốt hơn xấu.*
 
-| Signal | Weight | Điều kiện |
-|---|---|---|
-| `account_type_personal` | +25 | `type="u"` — platform xác nhận cá nhân |
-| `account_type_business` | -25 | `type="s"` — platform xác nhận doanh nghiệp |
-| `account_new_or_few_posts` | +14 | Tổng tin đang rao ≤ 2 |
-| `seller_high_sold_count` | -30 | Lịch sử ≥ 20 tin đã đăng |
+> **Muốn thay đổi điều kiện lọc?** Ví dụ: chỉ nhận mặt tiền, nâng/hạ giá sàn, thêm/bớt quận → báo trực tiếp.
 
-**Signals batdongsan-only:**
+### 8.3 Bảng điểm chi tiết theo từng sàn
 
-| Signal | Weight | Điều kiện |
-|---|---|---|
-| `muaban_multi_active_listings` | -40 | Tin đang rao ≥ 5 → broker rõ ràng |
-| `muaban_few_active_listings` | +20 | Tin đang rao < 5 → ứng viên chính chủ |
-| `listing_is_vip` | -10 | Tin VIP (BDS trả phí đẩy) |
+> Section này dùng kép cho **dev** (audit logic scoring) và **vợ** (feedback tối ưu công thức). Cột "Feedback?" là chỗ vợ ghi chú khi gặp tin lọt sai/lọc oan.
+>
+> Lịch sử update: v1.0 — 22/04/2026 (initial). v1.1 — 28/04/2026 (session 12: tune muaban).
 
-*(Lưu ý: BDS signal names dùng tiền tố `bds_*` trong code nhưng không liệt kê đầy đủ ở đây — xem `pipeline/signals.py`)*
+#### 8.3.1 Sàn 1 — Nhatot.com (chotot.com)
 
-**Signals muaban-specific (thay thế default khi source=muaban):**
+**Cách lấy tin:**
+- **URL đang quét:** Cho thuê BĐS TPHCM, giá từ 15 triệu, chỉ tài khoản cá nhân (lọc sẵn từ phía Nhatot — `f=p`)
+- **Cách đọc:** Đọc dữ liệu nhúng trong trang web (không cần đăng nhập), mỗi trang 20 tin
+- **Số điện thoại:** Không lấy được (tài khoản Chotot bị khóa do quét quá nhiều). Tin hiển thị "🔒 SĐT ẩn — mở app nhatot"
+- **Chu kỳ:** Mỗi 20 phút
 
-| Signal | Weight | Điều kiện |
-|---|---|---|
-| `muaban_multi_active_listings` | -40 | Tin đang rao ≥ 5 |
-| `muaban_few_active_listings` | +20 | Tin đang rao < 5 |
-| `avatar_is_blank` | +15 | Không có ảnh đại diện — chủ nhà thường không setup |
-| `account_name_is_phone` | +20 | Tên tài khoản là số điện thoại — owner pattern mạnh |
-| `listing_is_vip` | -10 | Tin VIP |
-| `text_owner_language` | -5 | Giảm weight vì môi giới trên muaban hay giả danh claim này |
-| `trangtrang_spam_penalty` | -30 | Weight cao hơn vì muaban có nhiều spam hơn |
+**Thông tin thu thập được mỗi tin:**
 
-*Business view: Muaban có cách nhận diện broker khác — không có thông tin tài khoản "cá nhân/doanh nghiệp" như Nhatot. Thay vào đó, dựa vào ảnh đại diện, tên tài khoản, và số tin đang rao.*
+| Thông tin | Có không? | Ghi chú |
+|-----------|-----------|---------|
+| Tiêu đề, mô tả | ✅ | Đầy đủ |
+| Địa chỉ, quận | ✅ | |
+| Giá, diện tích | ✅ | |
+| Ảnh | ✅ | |
+| Tên người đăng | ✅ | |
+| **Loại tài khoản** | ✅ | Nhatot phân loại sẵn: Cá nhân / Doanh nghiệp |
+| **Số tin đang đăng** | ✅ | Lấy từ profile người đăng (`seller_info.live_ads`) |
+| Số điện thoại | ❌ | Tạm mất — tài khoản Chotot bị khóa |
+| Năm gia nhập | ❌ | Không có trên Nhatot |
+
+**Dấu hiệu Chính chủ (cộng điểm):**
+
+| Dấu hiệu | Điểm | Giải thích | Feedback? |
+|----------|------|-----------|-----------|
+| **Nhatot xác nhận tài khoản Cá nhân** | +25 | Platform tự phân loại, rất đáng tin | |
+| **Account mới hoặc ít tin** (≤ 2 tin đang đăng) | +14 | Chủ nhà thường chỉ có 1-2 mặt bằng | |
+| **Viết không dấu / nhiều lỗi chính tả** | +15 | Chủ nhà gõ nhanh trên điện thoại, không copy-paste | |
+| **Đăng ngoài giờ hành chính** (trước 8h, sau 18h, hoặc cuối tuần) | +8 | Chủ nhà đăng sau giờ làm việc | |
+| **Mô tả dùng ngôn ngữ chính chủ** | +5 | "nhà tôi", "chủ nhà cho thuê", "không qua trung gian"… | ⬅ Nên tăng? |
+| **Ít ảnh** (≤ 5 ảnh) | +5 | Chủ nhà chụp nhanh, không pro | |
+| **Mô tả rất ngắn** (< 50 ký tự) | +5 | Chủ nhà ghi qua loa | |
+| **Tin rất mới** (< 2 giờ) | +10 | Ưu tiên cao nhất | |
+| **Tin trong ngày** (2–24 giờ) | +5 | | |
+| **Tầng trệt / tầng 1** | +8 | Mặt bằng kinh doanh tốt nhất | |
+| **Không rõ tầng** | +3 | Chủ nhà thường lười ghi | |
+| AI phân tích text | 0–30 | Phụ thuộc setup (hiện chưa hoạt động) | |
+
+**Dấu hiệu Môi giới (trừ điểm):**
+
+| Dấu hiệu | Điểm | Giải thích | Feedback? |
+|----------|------|-----------|-----------|
+| **Nhatot xác nhận tài khoản Doanh nghiệp** | -25 | Platform tự phân loại | |
+| **Lịch sử đăng ≥ 20 tin** | -30 | Rõ ràng môi giới chuyên nghiệp | |
+| **Tên tài khoản chứa từ môi giới** | -20 | "BĐS Quỳnh Hương", "Địa ốc ABC", "Công ty XYZ"… | ⬅ Bổ sung tên? |
+| **Cùng 1 account đăng > 2 tin trong 1 lần quét** | -20 | Broker thường đăng hàng loạt | |
+| **Mô tả dùng ngôn ngữ marketing thổi phồng** | -20 | "siêu phẩm", "vị trí vàng", "không thể bỏ lỡ"… | ⬅ Bổ sung từ? |
+| **Nhắc đến hoa hồng** | -15 | "hoa hồng 1 tháng", "commission"… | |
+| **Nhiều emoji** (≥ 5 cái) | -15 | Format marketing của môi giới | |
+| **Nhiều ảnh** (≥ 8 ảnh) | -10 | Chụp chuyên nghiệp | |
+| **Ngôn ngữ môi giới** | -10 | "hotline:", "zalo:", "chuyên BĐS"… | |
+| **Tin đăng lại** (> 7 ngày tuổi) | -15 | Môi giới tái đăng | |
+| **Lầu 3 trở lên** | -5 | Ít nhu cầu | |
+| **Mô tả quá dài** (> 500 ký tự) | -5 | Copy-paste marketing | |
+| **SĐT bị báo spam ≥ 5 lần trên trangtrang.com** | -25 | Cộng đồng đã xác nhận spam | |
+
+#### 8.3.2 Sàn 2 — Batdongsan.com.vn
+
+**Cách lấy tin:**
+- **URL đang quét:** Cho thuê nhà mặt phố TPHCM, lọc theo loại hình: Kho, Nhà xưởng, Đất thương mại, Shophouse
+- **Cách đọc:** Dùng trình duyệt ẩn danh (bypass Cloudflare), đọc trang danh sách + vào từng trang chi tiết
+- **Số điện thoại:** Không lấy được (quá phức tạp, tạm bỏ qua)
+- **Chu kỳ:** Mỗi 20 phút
+
+**Đặc điểm xử lý BĐS:**
+- **Tin VIP (quảng cáo trả tiền):** Chỉ lấy nếu đăng hôm nay + chưa thấy trước đó. VIP cũ → bỏ qua nhanh, không mất thời gian
+- **Tin môi giới chuyên nghiệp (có badge):** Bỏ qua, lưu vào database nhãn "Confirmed Broker" để thống kê
+- **Dừng quét sớm:** Gặp tin thường không phải hôm nay → dừng trang đó, không quét thêm
+
+**Thông tin thu thập được mỗi tin:**
+
+| Thông tin | Có không? | Ghi chú |
+|-----------|-----------|---------|
+| Tiêu đề, địa chỉ, giá, diện tích | ✅ | Từ trang danh sách |
+| **Mô tả đầy đủ** | ✅ | Từ trang chi tiết |
+| **Tên người đăng** | ✅ | Từ trang chi tiết |
+| **Số tin đang đăng** | ✅ | Sidebar trang chi tiết: "Tin đăng đang có X" |
+| **Link trang cá nhân** | Một phần | Không phải ai cũng có (guru.batdongsan.com.vn) |
+| **Năm gia nhập** | Một phần | Chỉ có khi tìm thấy trang cá nhân |
+| Số điện thoại | ❌ | Tạm bỏ |
+
+*BĐS dùng ngưỡng nới lỏng hơn (chính chủ ≥ 60 thay vì 65) vì thiếu một số tín hiệu so với Nhatot.*
+
+**Dấu hiệu Chính chủ (cộng điểm):**
+
+| Dấu hiệu | Điểm | Giải thích | Feedback? |
+|----------|------|-----------|-----------|
+| **Chỉ có 1 tin đang đăng** | +10 (+15 stack) | Người bình thường hiếm khi có nhiều | |
+| **Có 1–5 tin đăng** | +15 | Chủ có vài BĐS — vẫn chấp nhận được | ⬅ Ngưỡng phù hợp? |
+| **Mô tả dùng ngôn ngữ chính chủ** | +5 | Tương tự Nhatot | |
+| **Viết không dấu** | +10 | Chủ nhà gõ nhanh | |
+| **Đăng ngoài giờ hành chính** | +5 | | |
+| **Tin rất mới** (< 2h) | +10 | | |
+| **Tin trong ngày** (2–24h) | +5 | | |
+| **Tầng trệt** | +8 | | |
+| **Không rõ tầng** | +3 | | |
+| **Mô tả ngắn** | +5 | | |
+
+**Dấu hiệu Môi giới (trừ điểm):**
+
+| Dấu hiệu | Điểm | Giải thích | Feedback? |
+|----------|------|-----------|-----------|
+| **Có > 5 tin đăng** | -30 | Broker chuyên nghiệp | ⬅ Ngưỡng 5 có đúng không? |
+| **Có badge "Môi giới chuyên nghiệp"** | -40 | Hard signal — BĐS xác nhận | |
+| **Tên tài khoản chứa từ môi giới** | -25 | Mạnh hơn Nhatot vì BĐS có nhiều "Quỳnh Hương BĐS" | |
+| **Cùng 1 người đăng > 2 tin/lần quét** | -30 | | |
+| **Gia nhập ≥ 3 năm** (nếu có trang cá nhân) | -10 | Dấu hiệu phụ — broker lâu năm | ⬅ Có phù hợp không? |
+| **Mô tả marketing thổi phồng** | -20 | | |
+| **Nhắc hoa hồng** | -15 | | |
+| **Ngôn ngữ môi giới** | -10 | | |
+| **Nhiều emoji** | -15 | | |
+| **Nhiều ảnh** (≥ 8) | -3 | Giảm nhẹ vì BĐS lớn hay có nhiều ảnh | |
+| **Mô tả quá dài** | -5 | | |
+
+#### 8.3.3 Sàn 3 — Muaban.net
+
+**Cách lấy tin:**
+- **URL đang quét:** Cho thuê văn phòng/mặt bằng TPHCM, giá 15–100 triệu, sắp xếp mới nhất
+- **Cách đọc:** Dùng kỹ thuật giả lập Firefox (nhẹ hơn BĐS, không cần trình duyệt thật)
+- **Số điện thoại:** ✅ **Lấy được miễn phí** — Muaban nhúng số điện thoại trong trang chi tiết, không cần đăng nhập
+- **Chu kỳ:** Mỗi 30 phút
+
+**Thông tin thu thập được mỗi tin:**
+
+| Thông tin | Có không? | Ghi chú |
+|-----------|-----------|---------|
+| Tiêu đề, địa chỉ, giá, diện tích | ✅ | |
+| **Số điện thoại** | ✅ | Từ trang chi tiết, miễn phí |
+| **Tên người đăng** | ✅ | Từ trang chi tiết |
+| Mô tả đầy đủ | ✅ | |
+| **Avatar (ảnh đại diện)** | ✅ | Dùng để phát hiện tài khoản mới |
+| Số tin đang đăng | ❌ | API trả về lỗi, chưa lấy được |
+| Loại tài khoản | ❌ | Không đáng tin trên Muaban |
+
+*Muaban dùng bộ chấm riêng (`config/scoring_muaban.yaml`) vì thiếu một số tín hiệu, và có thêm tín hiệu đặc thù.*
+*Ngưỡng nới lỏng từ session 12 (28/04/2026): chính chủ ≥ 60 (thay vì 65), alert vợ ≥ 50 (thay vì 55). Bỏ penalty `Tin VIP` vì gần như mọi tin muaban đều VIP.*
+
+**Dấu hiệu Chính chủ (cộng điểm):**
+
+| Dấu hiệu | Điểm | Giải thích | Feedback? |
+|----------|------|-----------|-----------|
+| **Tên tài khoản là số điện thoại** | +20 | Rất đặc trưng của chủ nhà bình thường | ⬅ Chính xác không? |
+| **Ảnh đại diện trống** (dùng ảnh mặc định) | +15 | Chủ nhà mới lập tài khoản, chưa upload ảnh | ⬅ Có nhiều false positive? |
+| **Ít tin đăng** (< 5 tin) | +20 | | ⬅ Ngưỡng 5 phù hợp? |
+| **Viết không dấu** | +15 | | |
+| **Đăng ngoài giờ hành chính** | +8 | | |
+| **Tin rất mới** (< 2h) | +10 | | |
+| **Tầng trệt** | +8 | | |
+
+**Dấu hiệu Môi giới (trừ điểm):**
+
+| Dấu hiệu | Điểm | Giải thích | Feedback? |
+|----------|------|-----------|-----------|
+| **≥ 5 tin đăng** | -40 | Ngưỡng được duyệt | ⬅ Có quá gắt không? |
+| **Tên tài khoản chứa từ môi giới** | -30 | | |
+| **Cùng 1 người đăng > 2 tin/lần quét** | -15 | Giảm từ -20 (session 12): muaban có chủ 2-3 mặt bằng phổ biến | ⬅ Đúng thực tế không? |
+| **Mô tả marketing** | -20 | | |
+| **Nhắc hoa hồng** | -15 | | |
+| **Ngôn ngữ môi giới** | -10 | | |
+| **Nhiều emoji** | -15 | | |
+| **Mô tả quá dài** | -5 | | |
+| **Dùng ngôn ngữ "chính chủ"** | -5 | Muaban: môi giới hay giả danh claim này, nên trừ nhẹ | ⬅ Đồng ý không? |
+| **SĐT bị báo spam ≥ 5 lần trên trangtrang.com** | -30 | Mạnh hơn default (-25) — muaban nhiều spam phone | |
+
+> **Đã bỏ session 12 (28/04/2026):** Penalty `Tin VIP -10`. Lý do: gần như mọi tin muaban đều là VIP (muaban kiếm tiền chính bằng VIP boost), signal không discriminate được chính chủ vs môi giới.
+
+#### 8.3.4 So sánh nhanh 3 sàn
+
+| | Nhatot | BĐS | Muaban |
+|--|--------|-----|--------|
+| **Có số điện thoại** | ❌ | ❌ | ✅ |
+| **Phân loại cá nhân/DN tự động** | ✅ | ❌ | ❌ |
+| **Biết số tin đang đăng** | ✅ | ✅ | ❌ |
+| **Biết năm gia nhập** | ❌ | Một phần | ❌ |
+| **Mô tả đầy đủ** | ✅ | ✅ | ✅ |
+| **Ngưỡng chính chủ** | 65 | 60 | 60 |
+| **Alert vợ từ điểm** | 55 | 52 | 50 |
+
+#### 8.3.5 Câu hỏi gợi ý để feedback
+
+Khi xem tin được alert, hãy nhìn vào điểm số và trả lời:
+
+1. **"Tin này bị lọc oan"** — Thực tế là chính chủ nhưng bị đánh giá là môi giới → dấu hiệu nào bị sai?
+2. **"Tin này lọt qua nhưng là môi giới"** → Dấu hiệu nào đang thiếu?
+3. **Ngưỡng số tin đăng** — Trên BĐS, hiện tại > 5 tin = môi giới. Thực tế bạn gặp có đúng không? Chủ nhà bình thường tối đa mấy tin?
+4. **Muaban: ≥ 5 tin = môi giới** — Ngưỡng này ổn không hay cần điều chỉnh?
+5. **Từ khóa marketing** — Trong thực tế bạn thấy môi giới hay dùng những cụm nào mà hệ thống chưa có?
+6. **Khu vực** — 16 quận hiện tại có thiếu quận nào hay thừa quận nào không?
 
 ### 8.4 Broker Veto (Hard rules, chạy trước scoring)
 
