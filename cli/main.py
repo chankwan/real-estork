@@ -380,6 +380,10 @@ def send_digest_now():
 @app.command("start")
 def start_orchestrator(
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without sending alerts"),
+    source: str = typer.Option(
+        "manual-visible", "--source",
+        help="Lifecycle source: manual-visible / manual-headless / auto-headless",
+    ),
 ):
     """Start the full RealEstork orchestrator."""
     import sys
@@ -387,20 +391,68 @@ def start_orchestrator(
     log_dir.mkdir(exist_ok=True)
     log_file = log_dir / "orchestrator.log"
     logger.remove()
-    logger.add(sys.stderr, level="INFO", colorize=True,
-               format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}")
+    if sys.stderr is not None:  # None when launched via pythonw.exe (headless)
+        logger.add(sys.stderr, level="INFO", colorize=True,
+                   format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}")
     logger.add(str(log_file), level="DEBUG", rotation="1 day", retention="7 days",
                encoding="utf-8",
                format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} | {message}")
-    console.print(f"[bold cyan]Starting RealEstork Orchestrator...[/bold cyan]")
-    console.print(f"[dim]Logs → {log_file.resolve()}[/dim]")
+    if sys.stdout is not None:
+        console.print(f"[bold cyan]Starting RealEstork Orchestrator...[/bold cyan]")
+        console.print(f"[dim]Logs → {log_file.resolve()}[/dim]")
 
     async def _run():
         from orchestrator.agent import RealEstorkAgent
         agent = RealEstorkAgent(dry_run=dry_run)
-        await agent.start()
+        await agent.start(source=source)
 
     asyncio.run(_run())
+
+
+@app.command("stop")
+def stop_orchestrator():
+    """Stop a running bot instance (reads PID from .orchestrator.lock)."""
+    import subprocess
+    from orchestrator.agent import _pid_alive
+
+    lock_file = Path(".orchestrator.lock")
+    if not lock_file.exists():
+        console.print("[yellow]Bot không đang chạy (không tìm thấy .orchestrator.lock)[/yellow]")
+        return
+
+    raw = lock_file.read_text().strip()
+    try:
+        pid = int(raw)
+    except ValueError:
+        console.print(f"[red]Lock file chứa PID không hợp lệ: {raw!r} — xóa thủ công.[/red]")
+        lock_file.unlink(missing_ok=True)
+        return
+
+    if not _pid_alive(pid):
+        console.print(f"[yellow]PID {pid} không còn chạy. Dọn lock file...[/yellow]")
+        lock_file.unlink(missing_ok=True)
+        return
+
+    # Send Telegram lifecycle notify BEFORE kill (taskkill /F skips atexit)
+    try:
+        from notifications.telegram import TelegramNotifier
+        notifier = TelegramNotifier()
+        if notifier.is_configured:
+            asyncio.run(notifier.send_lifecycle(
+                f"🔴 <b>RealEstork Bot stopped</b> (user request via <code>bot stop</code>)\n"
+                f"PID: <code>{pid}</code>"
+            ))
+    except Exception as e:
+        console.print(f"[yellow]Telegram notify failed (vẫn tiếp tục stop): {e}[/yellow]")
+
+    console.print(f"Đang dừng bot (PID {pid})...")
+    result = subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        lock_file.unlink(missing_ok=True)
+        console.print(f"[green]Bot (PID {pid}) đã dừng.[/green]")
+    else:
+        console.print(f"[red]Không dừng được PID {pid}: {result.stderr.strip()}[/red]")
 
 
 @app.command("doctor")
@@ -556,6 +608,28 @@ def doctor() -> None:
             )
     except Exception as e:
         _check("Telegram bot token", False, f"không gọi được Telegram API ({e})", warn=True)
+
+    # 8. Lock file
+    console.print("\n[bold]8. Trạng thái lock file[/bold]")
+    lock_path = Path(".orchestrator.lock")
+    if not lock_path.exists():
+        _check("Không có lock file (sẵn sàng start)", True)
+    else:
+        from orchestrator.agent import _pid_alive
+        raw = lock_path.read_text().strip()
+        try:
+            lock_pid = int(raw)
+        except ValueError:
+            lock_pid = 0
+        if lock_pid and _pid_alive(lock_pid):
+            _check(f"Bot đang chạy (PID {lock_pid})", True)
+        else:
+            _check(
+                f"Stale lock file (PID {raw or '?'} không còn chạy)",
+                False,
+                "không cần xử lý — bot start sẽ tự dọn lock này",
+                warn=True,
+            )
 
     # Summary
     console.print()

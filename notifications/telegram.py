@@ -53,6 +53,25 @@ class TelegramNotifier:
         except TelegramError as e:
             logger.error(f"[telegram] send_admin error: {e}")
 
+    async def send_lifecycle(self, text: str) -> None:
+        """Send bot lifecycle event (start/stop/crash) to admin + group General topic."""
+        if not self.is_configured:
+            return
+        admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+        group_id = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "")
+        targets = [c for c in (admin_id, group_id) if c]
+        # Dedupe (admin and group could be same)
+        seen: set[str] = set()
+        for chat_id in targets:
+            if chat_id in seen:
+                continue
+            seen.add(chat_id)
+            try:
+                # No message_thread_id = goes to General topic in supergroups with topics
+                await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            except TelegramError as e:
+                logger.error(f"[telegram] send_lifecycle to {chat_id} error: {e}")
+
     async def send_listing_alert(
         self,
         listing: Any,

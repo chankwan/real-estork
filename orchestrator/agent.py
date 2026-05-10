@@ -31,6 +31,37 @@ from spiders import SpiderEngine
 
 load_dotenv()
 
+
+def _pid_alive(pid: int) -> bool:
+    """Cross-platform check if PID is alive. No external deps."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _format_uptime(seconds: float) -> str:
+    """Format uptime as '2h 15m' / '3d 4h' / '45m 12s'."""
+    s = int(seconds)
+    days, s = divmod(s, 86400)
+    hours, s = divmod(s, 3600)
+    minutes, s = divmod(s, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {s}s"
+    return f"{s}s"
+
+
 _REASON_LABELS = {
     "alerted": "gửi",
     "veto_broker": "veto môi giới",
@@ -674,28 +705,65 @@ class RealEstorkAgent:
                 )
                 logger.info(f"[orchestrator] Scheduled '{job_name}' cron: {job_config['cron']}")
 
-    async def start(self) -> None:
-        """Start the orchestrator. Blocks until interrupted."""
+    async def start(self, source: str = "manual") -> None:
+        """Start the orchestrator. Blocks until interrupted.
+
+        source: 'manual-visible', 'manual-headless', 'auto-headless' — used
+        for lifecycle Telegram notifications.
+        """
         import atexit
         import sys
         from pathlib import Path
-        
-        # Lock file — prevent multiple instances
+
+        crash_detected_pid: str | None = None
         lock_file = Path(".orchestrator.lock")
         if lock_file.exists():
-            existing_pid = lock_file.read_text().strip()
-            logger.error(
-                f"[orchestrator] Đã có instance đang chạy (PID {existing_pid}). "
-                "Nếu không còn process nào, xóa file .orchestrator.lock rồi chạy lại."
+            raw = lock_file.read_text().strip()
+            try:
+                existing_pid = int(raw)
+            except ValueError:
+                existing_pid = 0
+            if existing_pid and _pid_alive(existing_pid):
+                logger.error(
+                    f"[orchestrator] Đã có instance đang chạy (PID {existing_pid}). "
+                    "Tắt instance đó (Ctrl+C hoặc Stop-Process) trước khi start lại."
+                )
+                sys.exit(1)
+            logger.warning(
+                f"[orchestrator] Stale lock file (PID {raw or '?'} không còn chạy) — tự dọn dẹp."
             )
-            sys.exit(1)
-            
+            crash_detected_pid = raw or "?"
+            lock_file.unlink()
+
         lock_file.write_text(str(os.getpid()))
         atexit.register(lambda: lock_file.unlink(missing_ok=True))
+        self._start_time = time.time()
+        self._start_source = source
+
+        if crash_detected_pid:
+            await self.telegram.send_lifecycle(
+                f"⚠️ <b>RealEstork Bot — Phát hiện crash</b>\n"
+                f"Instance trước (PID <code>{crash_detected_pid}</code>) tắt đột ngột "
+                f"(cúp điện, kill -9, BSOD, hoặc OOM).\n"
+                f"Đang khởi động lại..."
+            )
         
         self.setup_scheduler()
         self.scheduler.start()
         logger.info("[orchestrator] ✅ Scheduler started. Running...")
+
+        # Notify Telegram: bot started
+        mode_label = {
+            "manual-visible": "🖥️ Có cửa sổ (terminal)",
+            "manual-headless": "👤 Headless (thủ công)",
+            "auto-headless": "🤖 Headless (tự động khi đăng nhập)",
+        }.get(source, source)
+        await self.telegram.send_lifecycle(
+            f"🟢 <b>RealEstork Bot started</b>\n"
+            f"Mode: {mode_label}\n"
+            f"PID: <code>{os.getpid()}</code>\n"
+            f"Time: {datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
 
         # Run immediate first cycle on startup
         logger.info("[orchestrator] 🚀 Initial cycles starting (Nhatot, Muaban & Batdongsan)...")
@@ -709,6 +777,15 @@ class RealEstorkAgent:
                 await asyncio.sleep(60)
         except (KeyboardInterrupt, SystemExit):
             logger.info("[orchestrator] Shutting down...")
+            uptime = _format_uptime(time.time() - self._start_time)
+            try:
+                await self.telegram.send_lifecycle(
+                    f"🔴 <b>RealEstork Bot stopped</b> (Ctrl+C)\n"
+                    f"Uptime: {uptime}\n"
+                    f"PID: <code>{os.getpid()}</code>"
+                )
+            except Exception as e:
+                logger.warning(f"[orchestrator] Lifecycle notify failed on shutdown: {e}")
             self.scheduler.shutdown()
 
 

@@ -1,83 +1,111 @@
 # RealEstork CLI — Hướng dẫn Vận hành
 
-Tất cả các lệnh được thực thi thông qua module `cli.main`. 
-Cấu trúc lệnh: `python -m cli.main [command] [options]`
+Tất cả lệnh dùng qua `bot.bat` (shorthand) hoặc đầy đủ `venv\Scripts\python.exe -m cli.main`.
+
+```
+bot <command>                         # shorthand (dùng bot.bat)
+venv\Scripts\python.exe -m cli.main <command>   # đầy đủ
+```
 
 ---
 
 ## 1. Vận hành chính
 
-### `start`
-**Lệnh:** `python -m cli.main start`
-- **Mô tả:** Khởi động hệ thống Orchestrator toàn diện.
-- **Use case:** Chạy bot ở chế độ tự động 24/7. Bot sẽ tự động lập lịch crawl, xử lý và bắn alert Telegram.
-- **Option:** `--dry-run` (Chạy thử pipeline nhưng không gửi thông báo thật).
+### `bot-start`
+**Lệnh:** `bot-start` (terminal) hoặc double-click `bot-start.bat` (Explorer)
+- Khởi động Orchestrator có cửa sổ (visible mode) — thấy log trực tiếp, dừng bằng `Ctrl+C`.
+- Source mode: `manual-visible` → Telegram báo "🖥️ Có cửa sổ (terminal)".
 
-### `digest`
-**Lệnh:** `python -m cli.main digest`
-- **Mô tả:** Gửi báo cáo tổng kết (Daily Digest) ngay lập tức.
-- **Use case:** Muốn xem thống kê hoạt động của hệ thống trong ngày mà không cần đợi đến 8:00 sáng.
+### `bot-start-headless`
+**Lệnh:** `bot-start-headless` (terminal) hoặc double-click `bot-start-headless.bat` (Explorer)
+- Khởi động Orchestrator **headless** (không cửa sổ, dùng `pythonw.exe`).
+- Use case: sau khi `bot-stop` mà không muốn reboot máy.
+- Source mode: `manual-headless` → Telegram báo "👤 Headless (thủ công)".
+- Bot cũng tự khởi động headless khi đăng nhập Windows qua Task Scheduler "RealEstork Bot" → source `auto-headless`, Telegram báo "🤖 Headless (tự động khi đăng nhập)".
+
+### `bot-stop`
+**Lệnh:** `bot-stop` (terminal) hoặc double-click `bot-stop.bat` (Explorer)
+- Dừng bot đang chạy (đọc PID từ `.orchestrator.lock` và kill process).
+- Dùng được cho cả bot chạy headless lẫn visible.
+- Gửi Telegram lifecycle "🔴 Bot stopped" trước khi kill.
+
+### Telegram lifecycle notifications
+Bot tự động gửi 3 loại sự kiện vào **General topic** của group + admin chat:
+
+| Sự kiện | Khi nào | Format |
+|---|---|---|
+| 🟢 Started | Mỗi lần bot khởi động | Mode + PID + Time |
+| 🔴 Stopped | Ctrl+C hoặc `bot stop` | Uptime + PID |
+| ⚠️ Crash detected | Lần start kế tiếp sau crash | PID đã chết + lý do gợi ý |
+
+**Cơ chế phát hiện crash**: lock file (`.orchestrator.lock`) còn lại sau shutdown. Cả 3 cách shutdown êm (Ctrl+C / `bot stop` / atexit) đều xóa lock — còn lock = crash. Tự động khôi phục: lần start kế tiếp tự dọn lock + gửi notify.
+
+### `bot digest`
+**Lệnh:** `bot digest`
+- Gửi Daily Digest ngay lập tức (không đợi 8:00 AM).
 
 ---
 
-## 2. Quản lý Spider (Crawl)
+## 2. Quản lý Spider
 
-### `spider list`
-**Lệnh:** `python -m cli.main spider list`
-- **Mô tả:** Liệt kê danh sách các spider hiện có và trạng thái (Enable/Disable).
-- **Use case:** Kiểm tra xem các spider (nhatot, batdongsan, alonhadat) đã được cấu hình đúng chưa.
+### `bot spider list`
+**Lệnh:** `bot spider list`
+- Liệt kê danh sách spiders và trạng thái enable/disable.
 
-### `spider run <name>`
-**Lệnh:** `python -m cli.main spider run [nhatot|batdongsan]`
-- **Mô tả:** Chạy thủ công một spider cụ thể.
-- **Use case:** Kiểm tra xem spider có đang bị chặn (blocked) bởi website không, hoặc muốn lấy dữ liệu mới ngay lập tức cho một site nhất định.
-- **Option:** `--dry-run` (Chỉ in kết quả ra màn hình, không lưu vào database).
+### `bot spider run <name>`
+**Lệnh:** `bot spider run nhatot` / `bot spider run batdongsan` / `bot spider run muaban`
+- Chạy thủ công 1 spider — kiểm tra xem site có bị chặn không, hoặc lấy dữ liệu ngay.
+- `--dry-run`: in kết quả ra màn hình, không lưu DB.
 
 ---
 
-## 3. Cấu hình & Auth (Quan trọng)
+## 3. Cấu hình & Auth
 
-### `setup-nhatot`
-**Lệnh:** `python -m cli.main setup-nhatot`
-- **Mô tả:** Mở trình duyệt để đăng nhập Chợ Tốt và lấy Access Token.
-- **Use case:** Chạy lần đầu tiên hoặc khi token Chợ Tốt hết hạn mà hệ thống không thể tự refresh tự động.
-
-### `setup-batdongsan`
-**Lệnh:** `python -m cli.main setup-batdongsan`
-- **Mô tả:** Mở trình duyệt để đăng nhập Batdongsan.com.vn và lưu Cookies.
-- **Use case:** Chạy lần đầu tiên để đảm bảo tính năng **Decrypt Phone** (lấy SĐT) hoạt động ổn định.
+### `bot setup-muaban`
+**Lệnh:** `bot setup-muaban`
+- Mở trình duyệt để đăng nhập Muaban.net và lưu session cookies.
+- Chạy khi cookie muaban hết hạn (bot sẽ cảnh báo qua Telegram).
 
 ---
 
 ## 4. Phân tích & Phản hồi
 
-### `classify <listing_id>`
-**Lệnh:** `python -m cli.main classify [ID_TIN_DANG]`
-- **Mô tả:** Hiển thị chi tiết bảng điểm (score breakdown) của một tin đăng.
-- **Use case:** Kiểm tra tại sao một tin đăng lại được chấm điểm cao (Chính chủ) hoặc thấp (Môi giới). Giúp tinh chỉnh lại các trọng số (weight) trong file `scoring.yaml`.
+### `bot classify <id>`
+**Lệnh:** `bot classify nhatot-132087311`
+- Xem bảng điểm chi tiết của 1 tin: signal nào fire, tại sao được/không được alert.
+- Dùng để tinh chỉnh weights trong `config/scoring.yaml`.
 
-### `mark <ref> <status>`
-**Lệnh:** `python -m cli.main mark [source-id] [called|owner|broker|archived]`
-- **Mô tả:** Đánh dấu trạng thái thực tế của một tin đăng sau khi đã kiểm tra.
-- **Use case:** Ghi lại phản hồi (feedback) để hệ thống tính toán độ chính xác (Accuracy). 
-- *Ví dụ:* `python -m cli.main mark batdongsan-12345 owner`
+### `bot mark <id> <status>`
+**Lệnh:** `bot mark batdongsan-45309426 owner`
+- Ghi feedback kết quả thực tế sau khi kiểm tra tin.
+- Status hợp lệ: `called` / `owner` / `broker` / `archived`
 
 ---
 
 ## 5. Quản lý AI
 
-### `ai status`
-**Lệnh:** `python -m cli.main ai status`
-- **Mô tả:** Kiểm tra model AI đang được sử dụng và cấu hình hiện tại.
-- **Use case:** Xác nhận hệ thống đang dùng model nào (Ollama local hay Gemini web).
+### `bot ai status`
+- Xem model AI đang dùng và cấu hình hiện tại.
 
-### `ai models`
-**Lệnh:** `python -m cli.main ai models`
-- **Mô tả:** Liệt kê danh sách các model AI được hỗ trợ (Local, Web Chat, Pay-per-token).
-- **Use case:** Xem các lựa chọn thay thế để chuyển đổi model khi cần.
+### `bot ai models`
+- Liệt kê các model khả dụng (local Ollama, Gemini web, API).
+
+### `bot ai switch <provider/model>`
+- Chuyển đổi model AI.
+
+---
+
+## 6. Health Check
+
+### `bot doctor`
+**Lệnh:** `bot doctor`
+- Pre-flight check 8 hạng mục: Python, packages, browser binaries, .env, config files, Supabase, Telegram, lock file.
+- Chạy sau mỗi lần cài đặt mới hoặc khi bot hoạt động bất thường.
 
 ---
 
 ## Ghi chú Vận hành
-- Luôn kiểm tra file log tại `logs/orchestrator.log` để theo dõi chi tiết quá trình chạy ngầm.
-- Nếu thấy số điện thoại không hiển thị, hãy chạy lại các lệnh `setup-*` để cập nhật quyền truy cập.
+
+- Log chi tiết: `logs\orchestrator.log`
+- Nếu bot không start được sau crash: tự xử lý từ phiên bản hiện tại (self-healing lock).
+- Mọi cấu hình thay đổi không cần restart bot nếu chỉnh `config/*.yaml` — scheduler tự reload.
