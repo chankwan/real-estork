@@ -224,7 +224,7 @@ class TestClassificationPipeline:
         # Score >= 65 → chinh_chu
         listing1 = make_listing(description="Nhà tôi cần cho thuê, không qua trung gian")
         r1 = self.classifier.classify(listing1)
-        
+
         # Label consistency
         assert r1.label in ["chinh_chu", "can_xac_minh", "moi_gioi"]
         if r1.score >= 65:
@@ -233,3 +233,50 @@ class TestClassificationPipeline:
             assert r1.label == "can_xac_minh"
         else:
             assert r1.label == "moi_gioi"
+
+
+# =====================================================
+# District Normalization Tests
+# =====================================================
+
+class TestDistrictNormalization:
+    """Tests for _normalize_district — handles post-2025 ward merger formats."""
+
+    def setup_method(self):
+        from pipeline.classifier import ClassificationPipeline
+        self.classifier = ClassificationPipeline()
+
+    def test_simple_district(self):
+        norm = self.classifier._normalize_district
+        assert norm("Quận 3") == "3"
+        assert norm("Q.3") == "3"
+        assert norm("Q. 3") == "3"
+        assert norm("Tân Bình") == "tan binh"
+
+    def test_batdongsan_format_outer_district(self):
+        """Batdongsan: 'Q. X (P. Y mới)' — outer is district."""
+        norm = self.classifier._normalize_district
+        # Real-world case from batdongsan-45685110 (was being rejected as ngoai_quan)
+        assert norm("Q. Tân Bình (P. Bảy Hiền mới)") == "tan binh"
+        assert norm("Q. 7 (P. Tân Quy mới)") == "7"
+        assert norm("Quận Bình Thạnh (P. 22 mới)") == "binh thanh"
+
+    def test_muaban_format_inner_district(self):
+        """Muaban: 'P. X (Q. Y cũ)' — inner is district."""
+        norm = self.classifier._normalize_district
+        assert norm("P. Tân Quy (Q. 7 cũ)") == "7"
+        assert norm("P. Bảy Hiền (Q. Tân Bình cũ)") == "tan binh"
+
+    def test_no_parentheses(self):
+        norm = self.classifier._normalize_district
+        assert norm("Bình Thạnh") == "binh thanh"
+        assert norm("Phú Nhuận") == "phu nhuan"
+
+    def test_leading_zero_district(self):
+        norm = self.classifier._normalize_district
+        assert norm("Quận 03") == "3"
+        assert norm("Q.07") == "7"
+
+    def test_empty_safe(self):
+        norm = self.classifier._normalize_district
+        assert norm("") == ""

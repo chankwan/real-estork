@@ -189,21 +189,35 @@ class ClassificationPipeline:
         return LABEL_MOI_GIOI
 
     def _normalize_district(self, district: str) -> str:
-        """Normalize district string for whitelist comparison (ASCII, no prefix)."""
+        """Normalize district string for whitelist comparison (ASCII, no prefix).
+
+        Handles two formats with parentheses (post-2025 ward merger):
+        - Batdongsan "Q. Tân Bình (P. Bảy Hiền mới)": outer is district → strip suffix
+        - Muaban "P. Tân Quy (Q. 7 cũ)": inner is district → use inner (strip "cũ"/"mới")
+        """
         import re
         from unidecode import unidecode
-        
-        # Muaban specific: "P. X (Q. Y cũ)" -> extract Q. Y
+
         if "(" in district and ")" in district:
-            inner = re.search(r'\((.*?)\)', district)
-            if inner:
-                inner_text = inner.group(1)
-                if any(k in inner_text for k in ["Q.", "Quận", "H.", "Huyện"]):
-                    district = inner_text
+            outer = district.split("(", 1)[0].strip()
+            outer_has_district = any(k in outer for k in ["Q.", "Quận", "H.", "Huyện"])
+            if outer_has_district:
+                # Batdongsan format: outer carries the real district, drop ward suffix
+                district = outer
+            else:
+                # Muaban format: extract real district from inner if it has Q./Quận
+                inner = re.search(r'\((.*?)\)', district)
+                if inner and any(k in inner.group(1) for k in ["Q.", "Quận", "H.", "Huyện"]):
+                    district = inner.group(1)
 
         d = unidecode(district or "").lower().strip()
-        # Remove common prefixes: "quan ", "q.", "q ", "huyen ", "h.", "thi xa ", "p.", "phuong "
-        d = re.sub(r'^(quan|huyen|thi\s*xa|q\.?|h\.?|p\.?|phuong)\s*', '', d)
+        # Strip trailing post-merger markers: "... cũ" / "... mới"
+        d = re.sub(r'\s+(cu|moi)$', '', d)
+        # Strip prefixes — single letters require dot OR following space to avoid
+        # eating real names ("phu" in "phu nhuan", "quy" in "quy nhon", etc.)
+        d = re.sub(r'^(quan|huyen|thi\s*xa|phuong)\s+', '', d)
+        d = re.sub(r'^[qph]\.\s*', '', d)
+        d = re.sub(r'^[qph]\s+', '', d)
         # Remove leading zeros: "03" → "3"
         if re.match(r'^\d+$', d):
             d = str(int(d))
