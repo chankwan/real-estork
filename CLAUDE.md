@@ -66,6 +66,29 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-05-22 (session 14) — Self-healing lock + headless auto-start + Telegram lifecycle + district fix
+- **Trigger**: Bot bị block ko khởi động được vì zombie lock file (PID 15048 đã chết nhưng `.orchestrator.lock` còn). User yêu cầu: loại root cause + làm friendly + standardize naming + auto-start sau reboot + Telegram báo lifecycle.
+- **Self-healing lock** (`orchestrator/agent.py`):
+  - Helper `_pid_alive(pid)` dùng `os.kill(pid, 0)` (stdlib, cross-platform, ko cần psutil).
+  - Logic: lock tồn tại → check PID alive → alive thì exit, ko alive thì dọn lock + đánh dấu `crash_detected_pid` → start bình thường → gửi Telegram crash notify.
+  - `atexit.register` dọn lock khi graceful exit. Crash để lock lại → next start tự phát hiện.
+- **Headless + auto-start** (`bot-start-headless.bat` + Task Scheduler):
+  - `pythonw.exe -X utf8 -m cli.main start --source manual-headless` chạy ko cửa sổ.
+  - Task Scheduler "RealEstork Bot" — trigger `-AtLogon`, action chạy `bot-start-headless.bat`, source `auto-headless`. Tự khởi động khi đăng nhập Windows.
+  - Guard `sys.stderr is not None` trong `cli/main.py` (pythonw có stderr/stdout = None → loguru `add(sys.stderr)` crash).
+- **Symmetric naming + stop**: `bot-start.bat` (visible) / `bot-start-headless.bat` / `bot-stop.bat` (đọc PID từ lock + `taskkill /F` + dọn lock). Khớp với `bot doctor` pattern. CLI `bot stop` cũng có.
+- **Telegram lifecycle** (`notifications/telegram.py` → `send_lifecycle()`): gửi vào admin chat + group General topic (ko `message_thread_id`). 3 sự kiện:
+  - 🟢 Started — mode label (manual-visible/manual-headless/auto-headless) + PID + time.
+  - 🔴 Stopped — uptime + PID. Trigger: Ctrl+C, `bot stop`, atexit.
+  - ⚠️ Crash detected — gửi ở lần start kế tiếp sau crash, kèm PID cũ đã chết.
+- **Fix `_normalize_district`** (`pipeline/classifier.py`): batdongsan-45685110 (Tân Bình, score=66) bị reject "ngoài quận". 3 bug:
+  1. Format batdongsan `"Q. Tân Bình (P. Bảy Hiền mới)"` — outer là district, code cũ chỉ extract inner.
+  2. Regex `p\.?` ăn chữ "p" trong "phu nhuan" → "hu nhuan". Sửa: tách prefix dạng short (q/p/h) bắt buộc có `.` hoặc space.
+  3. Suffix "cũ/mới" sau ward merger 2025 ko bị strip → `"7 cu"` ko match whitelist.
+- **Tests**: +6 test trong `TestDistrictNormalization` (tests/test_pipeline.py) — batdongsan format, muaban format, no parens, leading zeros, Phú Nhuận edge, empty. Pass 6/6.
+- **Docs**: `README.md` rewrite (bảng lệnh + lifecycle + Task Scheduler), `docs/cli.md` rewrite (bot prefix throughout + lifecycle table), `BACKLOG.md` mới (track muaban URL expansion + 2 known bugs).
+- **Known bug** (chưa fix, đã ghi BACKLOG): bot silent crash khi browser context die — atexit vẫn chạy → dọn lock → crash detection miss.
+
 ### 2026-04-28 (session 13) — District whitelist 19 quận + per-district price override
 - **Trigger**: 2 tin score=100 chinh_chu (`nhatot/132087311` Tân Phú nhà đất, `nhatot/132087583` Bình Tân mặt bằng kinh doanh) bị reject "ngoài quận" hôm 28/04. Cả 2 đều là tin chính chủ thật, miss alert.
 - **Fix YAML** cả 3 source (`config/scoring.yaml` + `scoring_batdongsan.yaml` + `scoring_muaban.yaml`):
