@@ -66,6 +66,21 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-05-26 (session 17) — Mở rộng muaban: 1 URL → 3 URL (nhà cho thuê + văn phòng/MBKD + nhà xưởng/kho/đất)
+- **Trigger**: Vợ gửi 3 link muaban có tin chính chủ mà bot bỏ sót (BACKLOG item "Mở rộng muaban URL category"). Cụ thể: bot chỉ crawl `cho-thue-van-phong-mat-bang-ho-chi-minh`, miss 2 category `cho-thue-nha-ho-chi-minh` và `cho-thue-nha-xuong-kho-dat-ho-chi-minh`.
+- **Root cause**: KHÔNG phải bug parsing/dedup. Là gap **phạm vi config** — `config/spiders.yaml:54` hardcode `url:` (single string), spider load `self.start_url` rồi loop pages. 2 category còn lại không bao giờ được fetch.
+- **Refactor** (`spiders/muaban.py`):
+  - `__init__`: đọc `urls` (list) trước, fallback `url` (string) cho backward-compat.
+  - `_page_url(start_url, page_num)`: signature đổi để nhận URL làm tham số (thay vì `self.start_url`).
+  - `fetch_listings`: split thành outer loop (cho mỗi `start_url` trong `self.start_urls` → gọi `_fetch_pages_from`) + Stage 2 detail enrichment global + post-process `same_session_account_count` global.
+  - `_fetch_pages_from(session, start_url)`: helper mới chứa toàn bộ inner crawl logic (paginate, parse, VIP filter, early-stop). Log lines giờ kèm slug để dễ debug: `[muaban:cho-thue-nha-ho-chi-minh] Fetching page 1: ...`.
+- **Pattern source**: 100% copy từ `spiders/batdongsan.py` (lines 93-102 init, 127-132 outer loop, 166-292 helper, 546-552 `_page_url`). Đã chuẩn hoá multi-URL pattern across 2 spiders.
+- **State management — giữ global, không tách per-URL** (decision rationale):
+  - `self.seen_ids` global → cùng listing xuất hiện ở 2 category chỉ classify 1 lần. Tránh re-alert + tiết kiệm Stage 2 detail fetch.
+  - `same_session_account_count` aggregate cross-category → 1 user post ở cả "nhà cho thuê" + "nhà xưởng" → fire signal multi-listing broker đúng (đây là behavior mong muốn, ko phải bug).
+- **Config thay đổi** (`config/spiders.yaml`): `url:` → `urls:` list 3 entries. Tất cả query params `?sort=1&price=15000000-100000000` (sort=1 mandatory cho early-stop; price filter parity với behavior cũ).
+- **Verify**: `bot spider run muaban --dry-run` standalone → expect 3 dòng `[muaban:slug] Fetching page 1` (1 cho mỗi URL), `Stage 1 done: N listings từ 3 URL(s)`, dedup cross-category hoạt động. Sau đó restart bot → monitor 1 muaban cycle thật → expect ít nhất 1 alert từ category mới nếu có chính chủ score ≥ 50 trong 30-60 phút.
+
 ### 2026-05-26 (session 16) — Fix silent crash: lock preserved on unhandled exception
 - **Trigger**: BACKLOG bug "bot silent crash khi browser context die" — atexit luôn dọn lock kể cả khi crash → next start không detect được crash.
 - **Root cause**: `atexit.register(lambda: lock_file.unlink(...))` unconditional — chạy bất kể process thoát bình thường hay crash.

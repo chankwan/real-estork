@@ -46,10 +46,16 @@ class MuabanSpider(BaseSpider):
 
     def __init__(self, config: dict[str, Any]) -> None:
         super().__init__(config)
-        self.start_url = config.get(
-            "url",
-            "https://muaban.net/bat-dong-san/cho-thue-van-phong-mat-bang-ho-chi-minh?sort=1&price=15000000-100000000",
+        _default_url = (
+            "https://muaban.net/bat-dong-san/cho-thue-van-phong-mat-bang-ho-chi-minh"
+            "?sort=1&price=15000000-100000000"
         )
+        urls_cfg = config.get("urls", None)
+        if urls_cfg:
+            self.start_urls: list[str] = [u.strip() for u in urls_cfg if u and u.strip()]
+        else:
+            self.start_urls = [config.get("url", _default_url)]
+        self.start_url = self.start_urls[0]  # giữ cho compat nếu có chỗ khác tham chiếu
         self.dedup_stop_ratio: float = float(config.get("dedup_stop_ratio", 0.7))
         self.detail_concurrency: int = int(config.get("detail_concurrency", 3))
         self._auth = None
@@ -101,115 +107,15 @@ class MuabanSpider(BaseSpider):
         from curl_cffi.requests import AsyncSession
 
         all_listings: list[RawListing] = []
-        page_num = 1
-        stop_reason = ""
 
         async with AsyncSession() as session:
-            while page_num <= self.max_pages:
-                url = self._page_url(page_num)
-                logger.info(f"[muaban] Fetching page {page_num}: {url}")
-
-                try:
-                    resp = await session.get(
-                        url,
-                        impersonate="firefox133",
-                        timeout=20,
-                        headers=_CURL_HEADERS,
-                    )
-
-                    if resp.status_code != 200:
-                        logger.warning(f"[muaban] Page {page_num}: HTTP {resp.status_code}")
-                        break
-
-                    html = resp.text
-                    if "Just a moment" in html or "Checking your browser" in html:
-                        logger.warning(f"[muaban] Cloudflare challenge on page {page_num}")
-                        break
-
-                    match = re.search(
-                        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-                        html,
-                        re.DOTALL,
-                    )
-                    if not match:
-                        logger.warning(f"[muaban] No __NEXT_DATA__ on page {page_num}")
-                        break
-
-                    data = json.loads(match.group(1))
-                    items = (
-                        data.get("props", {})
-                        .get("pageProps", {})
-                        .get("classified", {})
-                        .get("items", [])
-                    )
-
-                    if not items:
-                        logger.info(f"[muaban] No listings on page {page_num}")
-                        break
-
-                    page_parsed: list[RawListing] = []
-                    page_non_today = 0
-                    page_normal_count = 0
-                    page_normal_dedup_hit = 0
-                    vip_count = 0
-
-                    for item in items:
-                        listing = self._parse_listing(item)
-                        if not listing:
-                            continue
-
-                        is_dup = f"muaban:{listing.source_id}" in self.seen_ids
-
-                        if listing.is_vip:
-                            vip_count += 1
-                            # VIP not-today: skip card, do NOT trigger early-stop
-                            if listing.posted_at and not self._is_within_24h(listing.posted_at):
-                                continue
-                            page_parsed.append(listing)
-                            continue
-
-                        # Normal listing
-                        page_normal_count += 1
-                        if is_dup:
-                            page_normal_dedup_hit += 1
-                        if listing.posted_at and not self._is_within_24h(listing.posted_at):
-                            page_non_today += 1
-
-                        page_parsed.append(listing)
-
-                    all_listings.extend(page_parsed)
-                    logger.info(
-                        f"[muaban] Page {page_num}: parsed={len(page_parsed)}, "
-                        f"normal_dedup={page_normal_dedup_hit}/{page_normal_count}, "
-                        f"non_today={page_non_today}, vip={vip_count}"
-                    )
-
-                    # Early-stop: first non-today normal listing
-                    if page_non_today >= 1:
-                        stop_reason = f"non-today normal on page {page_num}"
-                        break
-
-                    # Early-stop: normal dedup ratio > threshold
-                    if page_normal_count > 0:
-                        ratio = page_normal_dedup_hit / page_normal_count
-                        if ratio > self.dedup_stop_ratio:
-                            stop_reason = (
-                                f"normal dedup {page_normal_dedup_hit}/{page_normal_count}"
-                                f" > {self.dedup_stop_ratio}"
-                            )
-                            break
-
-                    page_num += 1
+            for idx, start_url in enumerate(self.start_urls):
+                url_listings = await self._fetch_pages_from(session, start_url)
+                all_listings.extend(url_listings)
+                if idx < len(self.start_urls) - 1:
                     await asyncio.sleep(self.request_delay)
 
-                except Exception as e:
-                    logger.error(f"[muaban] Error on page {page_num}: {e}")
-                    break
-
-        if stop_reason:
-            logger.info(f"[muaban] Early-stop: {stop_reason}")
-
-        # Post-process: same-session account count (uses user_id as key)
+        # Post-process: same-session account count (uses user_id as key) — global across URLs.
         from collections import Counter
         id_counts: Counter = Counter(
             l.poster_profile_hash for l in all_listings if l.poster_profile_hash
@@ -218,13 +124,135 @@ class MuabanSpider(BaseSpider):
             if listing.poster_profile_hash:
                 listing.same_session_account_count = id_counts[listing.poster_profile_hash]
 
-        logger.info(f"[muaban] Stage 1 done: {len(all_listings)} listings")
+        logger.info(
+            f"[muaban] Stage 1 done: {len(all_listings)} listings "
+            f"từ {len(self.start_urls)} URL(s)"
+        )
 
-        # ── Stage 2: Batch detail enrichment ──────────────────────────────
+        # ── Stage 2: Batch detail enrichment (global across all URLs) ──
         if all_listings:
             await self._enrich_details_batch(all_listings)
 
         return all_listings
+
+    async def _fetch_pages_from(self, session, start_url: str) -> list[RawListing]:
+        """Crawl list pages for a single start_url. Returns listings collected.
+
+        Early-stop logic (non-today, dedup ratio) applies per-URL — non-today on
+        URL A does not stop URL B. Dedup state (self.seen_ids) stays global so the
+        same listing surfacing in two categories is detected, but doesn't stop the
+        crawl of a different category.
+        """
+        slug = start_url.split("/")[-1].split("?")[0]
+        listings: list[RawListing] = []
+        page_num = 1
+        stop_reason = ""
+
+        while page_num <= self.max_pages:
+            url = self._page_url(start_url, page_num)
+            logger.info(f"[muaban:{slug}] Fetching page {page_num}: {url}")
+
+            try:
+                resp = await session.get(
+                    url,
+                    impersonate="firefox133",
+                    timeout=20,
+                    headers=_CURL_HEADERS,
+                )
+
+                if resp.status_code != 200:
+                    logger.warning(f"[muaban:{slug}] Page {page_num}: HTTP {resp.status_code}")
+                    break
+
+                html = resp.text
+                if "Just a moment" in html or "Checking your browser" in html:
+                    logger.warning(f"[muaban:{slug}] Cloudflare challenge on page {page_num}")
+                    break
+
+                match = re.search(
+                    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+                    html,
+                    re.DOTALL,
+                )
+                if not match:
+                    logger.warning(f"[muaban:{slug}] No __NEXT_DATA__ on page {page_num}")
+                    break
+
+                data = json.loads(match.group(1))
+                items = (
+                    data.get("props", {})
+                    .get("pageProps", {})
+                    .get("classified", {})
+                    .get("items", [])
+                )
+
+                if not items:
+                    logger.info(f"[muaban:{slug}] No listings on page {page_num}")
+                    break
+
+                page_parsed: list[RawListing] = []
+                page_non_today = 0
+                page_normal_count = 0
+                page_normal_dedup_hit = 0
+                vip_count = 0
+
+                for item in items:
+                    listing = self._parse_listing(item)
+                    if not listing:
+                        continue
+
+                    is_dup = f"muaban:{listing.source_id}" in self.seen_ids
+
+                    if listing.is_vip:
+                        vip_count += 1
+                        # VIP not-today: skip card, do NOT trigger early-stop
+                        if listing.posted_at and not self._is_within_24h(listing.posted_at):
+                            continue
+                        page_parsed.append(listing)
+                        continue
+
+                    # Normal listing
+                    page_normal_count += 1
+                    if is_dup:
+                        page_normal_dedup_hit += 1
+                    if listing.posted_at and not self._is_within_24h(listing.posted_at):
+                        page_non_today += 1
+
+                    page_parsed.append(listing)
+
+                listings.extend(page_parsed)
+                logger.info(
+                    f"[muaban:{slug}] Page {page_num}: parsed={len(page_parsed)}, "
+                    f"normal_dedup={page_normal_dedup_hit}/{page_normal_count}, "
+                    f"non_today={page_non_today}, vip={vip_count}"
+                )
+
+                # Early-stop: first non-today normal listing
+                if page_non_today >= 1:
+                    stop_reason = f"non-today normal on page {page_num}"
+                    break
+
+                # Early-stop: normal dedup ratio > threshold
+                if page_normal_count > 0:
+                    ratio = page_normal_dedup_hit / page_normal_count
+                    if ratio > self.dedup_stop_ratio:
+                        stop_reason = (
+                            f"normal dedup {page_normal_dedup_hit}/{page_normal_count}"
+                            f" > {self.dedup_stop_ratio}"
+                        )
+                        break
+
+                page_num += 1
+                await asyncio.sleep(self.request_delay)
+
+            except Exception as e:
+                logger.error(f"[muaban:{slug}] Error on page {page_num}: {e}")
+                break
+
+        if stop_reason:
+            logger.info(f"[muaban:{slug}] Early-stop: {stop_reason}")
+        logger.info(f"[muaban:{slug}] Done: {len(listings)} listings")
+        return listings
 
     # ─── Stage 2: Detail enrichment ────────────────────────────────────────
 
@@ -408,11 +436,11 @@ class MuabanSpider(BaseSpider):
 
     # ─── Helpers ───────────────────────────────────────────────────────────
 
-    def _page_url(self, page_num: int) -> str:
+    def _page_url(self, start_url: str, page_num: int) -> str:
         if page_num == 1:
-            return self.start_url
-        connector = "&" if "?" in self.start_url else "?"
-        return f"{self.start_url}{connector}cp={page_num}"
+            return start_url
+        connector = "&" if "?" in start_url else "?"
+        return f"{start_url}{connector}cp={page_num}"
 
     def _parse_relative_time(self, text: str) -> datetime | None:
         now_vn = datetime.now(_VN_TZ)

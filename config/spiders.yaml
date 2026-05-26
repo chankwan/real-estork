@@ -51,12 +51,16 @@ spiders:
   - name: muaban
     enabled: true
     type: stealthy
-    url: https://muaban.net/bat-dong-san/cho-thue-van-phong-mat-bang-ho-chi-minh?sort=1&price=15000000-100000000
+    # Crawl 3 category — sort=1 mandatory cho early-stop, price filter parity với behavior cũ
+    urls:
+      - https://muaban.net/bat-dong-san/cho-thue-nha-ho-chi-minh?sort=1&price=15000000-100000000          # Nhà cho thuê
+      - https://muaban.net/bat-dong-san/cho-thue-van-phong-mat-bang-ho-chi-minh?sort=1&price=15000000-100000000   # Văn phòng / mặt bằng KD
+      - https://muaban.net/bat-dong-san/cho-thue-nha-xuong-kho-dat-ho-chi-minh?sort=1&price=15000000-100000000    # Nhà xưởng / kho / đất
     interval_minutes: 30
-    max_pages: 50
+    max_pages: 50              # Per URL — early-stop thường kích hoạt ở pages 1-2 trong steady state
     request_delay_seconds: 5
-    detail_concurrency: 3      # Stage-2 concurrent detail fetch (contact_name + phone)
-    dedup_stop_ratio: 0.7
+    detail_concurrency: 3      # Stage-2 concurrent detail fetch (contact_name + phone), global across URLs
+    dedup_stop_ratio: 0.7      # Per-URL early-stop khi >70% của page đã seen
 
   - name: cafeland
     enabled: false      # Phase 2
