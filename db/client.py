@@ -363,6 +363,23 @@ class SupabaseDB:
         except Exception as e:
             logger.error(f"[db] log_spider_run error: {e}")
 
+    def health_check_write(self) -> None:
+        """Write-path smoke test for RLS / service-role connectivity.
+
+        Inserts one sentinel row into spider_logs. Does NOT swallow exceptions —
+        caller must handle (alert + abort). A SELECT-only check is insufficient
+        because publishable/anon keys can SELECT under permissive RLS but fail
+        every INSERT with code 42501.
+        """
+        self.client.table("spider_logs").insert({
+            "spider_name": "__health_check__",
+            "status": "ok",
+            "listings_found": 0,
+            "new_listings": 0,
+            "error_message": f"startup smoke test pid={os.getpid()}",
+            "duration_seconds": 0,
+        }).execute()
+
     # =========================================================
     # SUBSCRIBERS (Hướng 2)
     # =========================================================

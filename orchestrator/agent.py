@@ -747,7 +747,36 @@ class RealEstorkAgent:
                 f"(cúp điện, kill -9, BSOD, hoặc OOM).\n"
                 f"Đang khởi động lại..."
             )
-        
+
+        try:
+            self.db.health_check_write()
+            logger.info("[orchestrator] ✅ DB smoke test passed (write OK)")
+        except Exception as e:
+            err_msg = str(e)
+            logger.error(
+                f"[orchestrator] ❌ DB smoke test FAILED — không thể write vào Supabase. "
+                f"{type(e).__name__}: {err_msg}"
+            )
+            is_rls = "row-level security" in err_msg.lower() or "42501" in err_msg
+            hint = (
+                "RLS chặn write — kiểm tra <code>SUPABASE_SERVICE_KEY</code> "
+                "(phải là <code>sb_secret_*</code> hoặc JWT <code>eyJ...</code>, "
+                "KHÔNG phải <code>sb_publishable_*</code>). Chạy: <code>bot doctor</code>."
+                if is_rls else
+                "Kết nối Supabase fail — kiểm tra <code>SUPABASE_URL</code> + "
+                "<code>SUPABASE_SERVICE_KEY</code> trong .env. Chạy: <code>bot doctor</code>."
+            )
+            try:
+                await self.telegram.send_lifecycle(
+                    f"🚨 <b>RealEstork Bot — KHỞI ĐỘNG THẤT BẠI</b>\n"
+                    f"DB smoke test fail.\n"
+                    f"Lỗi: <code>{type(e).__name__}: {err_msg[:200]}</code>\n"
+                    f"→ {hint}"
+                )
+            except Exception as tg_err:
+                logger.error(f"[orchestrator] Telegram alert cũng fail: {tg_err}")
+            sys.exit(1)
+
         self.setup_scheduler()
         self.scheduler.start()
         logger.info("[orchestrator] ✅ Scheduler started. Running...")

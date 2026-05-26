@@ -77,7 +77,12 @@ python -m cli.main classify <id>      # debug scoring for a listing
   - `sb_secret_*` / `eyJ...` (JWT cũ) → PASS.
   - Format khác → WARN (chưa biết, đừng hard fail).
   - Verify: negative test với `SUPABASE_SERVICE_KEY=sb_publishable_TEST` → `bot doctor` fail rõ ràng tại check này, KHÔNG đợi tới step "Supabase reachable" mới ra lỗi mơ hồ.
-- **Quyết định scope**: chưa thêm startup smoke test "insert dummy row → check RLS" trong orchestrator vì incident hôm nay là dạng "key sai prefix" có thể catch bằng string match. Smoke test mạnh hơn nhưng phức tạp hơn (cần health table riêng, cần cleanup), để dành cho lần gặp incident mà prefix check không bắt được.
+- **Defense-in-depth: startup write smoke test** (`db/client.py` → `health_check_write()`, gọi từ `orchestrator/agent.py` → `start()` sau lock setup, trước `setup_scheduler()`):
+  - Insert 1 sentinel row vào `spider_logs` (`spider_name="__health_check__"`). KHÔNG swallow exception — caller xử lý.
+  - Orchestrator catch → nếu lỗi chứa `row-level security` / `42501` thì hint key prefix; lỗi khác thì hint URL/key. Telegram alert `🚨 KHỞI ĐỘNG THẤT BẠI` với hint cụ thể + `sys.exit(1)`. atexit dọn lock (không phải crash → next start không trigger detection).
+  - Tại sao không SELECT-only: incident 2026-05-25 cho thấy publishable key có thể SELECT qua RLS permissive (seed_from_db chạy OK) nhưng INSERT bị chặn → SELECT check không catch được. Smoke test bắt buộc dùng write op.
+  - Tại sao không dedicated health_check table: tránh schema migration. `spider_logs` đã bắt buộc service-role, accumulate sentinel rows trivial (~1 row/restart).
+  - Verify: bot restart → log `✅ DB smoke test passed (write OK)` ngay sau `Ready`, trước `Scheduler started`. Negative path không test live (sẽ spam Telegram thật) — trust theo bot doctor negative test đã chạy ở cùng session.
 
 ### 2026-05-22 (session 14) — Self-healing lock + headless auto-start + Telegram lifecycle + district fix
 - **Trigger**: Bot bị block ko khởi động được vì zombie lock file (PID 15048 đã chết nhưng `.orchestrator.lock` còn). User yêu cầu: loại root cause + làm friendly + standardize naming + auto-start sau reboot + Telegram báo lifecycle.
