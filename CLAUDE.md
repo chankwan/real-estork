@@ -66,6 +66,22 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-05-26 (session 16) — Fix silent crash: lock preserved on unhandled exception
+- **Trigger**: BACKLOG bug "bot silent crash khi browser context die" — atexit luôn dọn lock kể cả khi crash → next start không detect được crash.
+- **Root cause**: `atexit.register(lambda: lock_file.unlink(...))` unconditional — chạy bất kể process thoát bình thường hay crash.
+- **Fix** (`orchestrator/agent.py` → `start()`):
+  - `clean_exit = False` flag, chỉ set `True` trên 2 con đường graceful: (1) `except (KeyboardInterrupt, SystemExit, asyncio.CancelledError)` và (2) smoke test abort trước `sys.exit(1)`.
+  - `_atexit_cleanup()` thay lambda: chỉ `unlink` lock nếu `clean_exit is True`. Crash path → lock giữ lại → next start detect qua PID-not-alive.
+  - Thêm `except Exception` cho crash path trong main loop: log error + gửi Telegram `💥 CRASHED` với traceback truncated + uptime + hint "lock giữ lại" + `scheduler.shutdown(wait=False)` + `raise`.
+  - Thêm `asyncio.CancelledError` vào graceful stop handler (Python 3.8+: CancelledError là BaseException, không bị `except Exception` bắt — nếu event loop bị cancel externally thì không bị nhầm là crash).
+- **Coverage matrix**:
+  - `Ctrl+C` / `bot-stop` → `clean_exit=True` → lock dọn → Telegram "stopped" ✅
+  - Smoke test fail → `clean_exit=True` → lock dọn → Telegram "KHỞI ĐỘNG THẤT BẠI" ✅
+  - Unhandled exception trong main loop → `clean_exit=False` → lock giữ → Telegram "CRASHED" → next start detect ✅
+  - Kill -9 / OOM / power loss → atexit không chạy → lock giữ → next start detect (đã có từ session 14) ✅
+  - **Gap còn lại**: exception trong APScheduler job không propagate lên main loop (APScheduler tự catch) → main loop vẫn `while True` → bot không crash nhưng spider chết lặng. Separate bug, chưa scope.
+- **Verify**: `bot-stop` → lock deleted ✅ (confirmed). Bot restart → smoke test pass → scheduler started ✅.
+
 ### 2026-05-25 (session 15) — Supabase project transfer → RLS chặn 21h + bot doctor key prefix check
 - **Trigger**: User chuyển project Supabase sang organization khác tối 24/05. Bot "đứng" từ 21h 24/05 đến ~17h 25/05 (~20h downtime im lặng).
 - **Symptom đánh lừa**: bot KHÔNG đứng theo nghĩa thông thường — PID alive, log file vẫn ghi mỗi cycle scrape/dedup/classify, `bot doctor` PID check báo healthy. Nhưng 853 RLS errors cumulative, 0 alert Telegram, 0 DB writes trong gần 24h.

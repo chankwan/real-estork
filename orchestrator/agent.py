@@ -735,8 +735,15 @@ class RealEstorkAgent:
             crash_detected_pid = raw or "?"
             lock_file.unlink()
 
+        clean_exit = False  # set True only on graceful stop; atexit skips lock cleanup on crash
         lock_file.write_text(str(os.getpid()))
-        atexit.register(lambda: lock_file.unlink(missing_ok=True))
+
+        def _atexit_cleanup() -> None:
+            if clean_exit:
+                lock_file.unlink(missing_ok=True)
+            # Crash path: leave lock so next start detects via PID-not-alive check.
+
+        atexit.register(_atexit_cleanup)
         self._start_time = time.time()
         self._start_source = source
 
@@ -775,6 +782,7 @@ class RealEstorkAgent:
                 )
             except Exception as tg_err:
                 logger.error(f"[orchestrator] Telegram alert cũng fail: {tg_err}")
+            clean_exit = True  # controlled abort, not crash — lock should be cleaned
             sys.exit(1)
 
         self.setup_scheduler()
@@ -804,7 +812,8 @@ class RealEstorkAgent:
         try:
             while True:
                 await asyncio.sleep(60)
-        except (KeyboardInterrupt, SystemExit):
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            clean_exit = True
             logger.info("[orchestrator] Shutting down...")
             uptime = _format_uptime(time.time() - self._start_time)
             try:
@@ -816,6 +825,27 @@ class RealEstorkAgent:
             except Exception as e:
                 logger.warning(f"[orchestrator] Lifecycle notify failed on shutdown: {e}")
             self.scheduler.shutdown()
+        except Exception as e:
+            # Unhandled exception — clean_exit stays False → lock preserved for crash detection.
+            logger.error(
+                f"[orchestrator] ❌ Unhandled exception — bot đang crash. "
+                f"{type(e).__name__}: {e}"
+            )
+            try:
+                uptime = _format_uptime(time.time() - self._start_time)
+                await self.telegram.send_lifecycle(
+                    f"💥 <b>RealEstork Bot CRASHED</b>\n"
+                    f"Lỗi: <code>{type(e).__name__}: {str(e)[:300]}</code>\n"
+                    f"Uptime: {uptime} | PID: <code>{os.getpid()}</code>\n"
+                    f"Lock file giữ lại — next start tự detect."
+                )
+            except Exception as tg_err:
+                logger.error(f"[orchestrator] Telegram crash notify cũng fail: {tg_err}")
+            try:
+                self.scheduler.shutdown(wait=False)
+            except Exception:
+                pass
+            raise
 
 
 def _update_env_file(key: str, value: str) -> None:

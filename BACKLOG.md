@@ -35,7 +35,5 @@ Tasks chưa làm — sắp xếp theo trạng thái. Item nào unblock thì kéo
 - Phát hiện: session 14 khi chạy full test suite. Pre-existing trước commit 077337f.
 - Mức độ: thấp — chỉ ảnh hưởng test, không ảnh hưởng production logic (vì known_broker phone list hiện rất nhỏ).
 
-### Bot bị silent crash khi browser context die
-- Triệu chứng: pythonw exit không log shutdown, không gửi Telegram "stopped". Lock file bị atexit dọn → crash detection ở next start MISS.
-- Workaround đề xuất: thêm `sys.excepthook` mark "crash mode" trong lock trước khi atexit chạy, hoặc unhandled exception → notify trước khi crash.
-- Mức độ: trung bình — đã có thiết kế trong session 14 nhưng không scope.
+### ~~Bot bị silent crash khi browser context die~~ ✅ Fixed session 16 (2026-05-26)
+- Xem `orchestrator/agent.py` → `start()` — `clean_exit` flag + `_atexit_cleanup` + `except Exception` crash handler.
