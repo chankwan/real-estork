@@ -565,6 +565,28 @@ def doctor() -> None:
             has_val = bool(val) and not val.startswith("your-")
             _check(f"{key}", has_val, f"điền vào .env: {desc}")
 
+        # Publishable/anon keys pass auth but RLS blocks every insert (code 42501).
+        # Symptom is invisible: bot keeps logging, only DB writes silently fail.
+        svc_key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+        if svc_key and not svc_key.startswith("your-"):
+            if svc_key.startswith(("sb_publishable_", "sb_anon_")):
+                _check(
+                    "SUPABASE_SERVICE_KEY là service-role key",
+                    False,
+                    "đang dùng publishable/anon key — RLS sẽ chặn mọi insert (lỗi 42501). "
+                    "Vào Supabase Dashboard → Settings → API Keys, copy key bắt đầu bằng "
+                    "[cyan]sb_secret_[/cyan] (hoặc JWT cũ [cyan]eyJ...[/cyan])",
+                )
+            elif svc_key.startswith(("sb_secret_", "eyJ")):
+                _check("SUPABASE_SERVICE_KEY đúng định dạng service-role", True)
+            else:
+                _check(
+                    f"SUPABASE_SERVICE_KEY định dạng lạ ('{svc_key[:15]}...')",
+                    False,
+                    "prefix không quen — đảm bảo là service_role / secret key từ Supabase Dashboard",
+                    warn=True,
+                )
+
         optional_keys = [
             ("TELEGRAM_GROUP_CHAT_ID", "Group chat (vợ chồng cùng xem)"),
         ]

@@ -66,6 +66,19 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-05-25 (session 15) — Supabase project transfer → RLS chặn 21h + bot doctor key prefix check
+- **Trigger**: User chuyển project Supabase sang organization khác tối 24/05. Bot "đứng" từ 21h 24/05 đến ~17h 25/05 (~20h downtime im lặng).
+- **Symptom đánh lừa**: bot KHÔNG đứng theo nghĩa thông thường — PID alive, log file vẫn ghi mỗi cycle scrape/dedup/classify, `bot doctor` PID check báo healthy. Nhưng 853 RLS errors cumulative, 0 alert Telegram, 0 DB writes trong gần 24h.
+- **Root cause**: Supabase đã release format key mới (`sb_secret_*` = service role, `sb_publishable_*` = anon) thay cho JWT cũ (`eyJ...`). Khi transfer sang org khác, Supabase re-issue keys; user copy nhầm `sb_publishable_*` vào `SUPABASE_SERVICE_KEY`. Publishable key pass authentication nhưng bị RLS chặn mọi insert (`code 42501: new row violates row-level security policy`).
+- **Fix**: chỉ update `.env` (no code change). Replace `sb_publishable_*` → `sb_secret_*`. Restart bot (`bot-stop.bat` + `bot-start-headless.bat`).
+- **Verify** (tail log post-restart): 853 RLS errors cumulative → **0 errors** sau restart. Dedup cache local còn nguyên → cycle đầu sau restart dồn 128 listings backlog, ra **52 alerts Telegram trong 30 phút** rồi giãn lại bình thường.
+- **Prevention** (`cli/main.py` → `doctor`): thêm check prefix `SUPABASE_SERVICE_KEY` ngay sau bước verify key tồn tại:
+  - `sb_publishable_*` / `sb_anon_*` → HARD FAIL với hướng dẫn copy-paste vào Supabase Dashboard.
+  - `sb_secret_*` / `eyJ...` (JWT cũ) → PASS.
+  - Format khác → WARN (chưa biết, đừng hard fail).
+  - Verify: negative test với `SUPABASE_SERVICE_KEY=sb_publishable_TEST` → `bot doctor` fail rõ ràng tại check này, KHÔNG đợi tới step "Supabase reachable" mới ra lỗi mơ hồ.
+- **Quyết định scope**: chưa thêm startup smoke test "insert dummy row → check RLS" trong orchestrator vì incident hôm nay là dạng "key sai prefix" có thể catch bằng string match. Smoke test mạnh hơn nhưng phức tạp hơn (cần health table riêng, cần cleanup), để dành cho lần gặp incident mà prefix check không bắt được.
+
 ### 2026-05-22 (session 14) — Self-healing lock + headless auto-start + Telegram lifecycle + district fix
 - **Trigger**: Bot bị block ko khởi động được vì zombie lock file (PID 15048 đã chết nhưng `.orchestrator.lock` còn). User yêu cầu: loại root cause + làm friendly + standardize naming + auto-start sau reboot + Telegram báo lifecycle.
 - **Self-healing lock** (`orchestrator/agent.py`):
