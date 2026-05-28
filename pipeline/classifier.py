@@ -214,8 +214,9 @@ class ClassificationPipeline:
         # Strip trailing post-merger markers: "... cũ" / "... mới"
         d = re.sub(r'\s+(cu|moi)$', '', d)
         # Strip prefixes — single letters require dot OR following space to avoid
-        # eating real names ("phu" in "phu nhuan", "quy" in "quy nhon", etc.)
-        d = re.sub(r'^(quan|huyen|thi\s*xa|phuong)\s+', '', d)
+        # eating real names ("phu" in "phu nhuan", "quy" in "quy nhon", etc.).
+        # "thanh pho" / "tp" / "tp." covers HCMC's "Thành phố Thủ Đức" (special city unit).
+        d = re.sub(r'^(quan|huyen|thi\s*xa|phuong|thanh\s*pho|tp\.?)\s+', '', d)
         d = re.sub(r'^[qph]\.\s*', '', d)
         d = re.sub(r'^[qph]\s+', '', d)
         # Remove leading zeros: "03" → "3"

@@ -6,13 +6,17 @@ spiders:
   - name: nhatot
     enabled: true
     type: stealthy
-    # StealthyFetcher: bypass Cloudflare, scrapes __NEXT_DATA__ JSON
-    # URL từ vợ 13/04/2026: thue-bat-dong-san (all BĐS cho thuê), price>=15M, f=p (cá nhân only, không business/broker)
-    url: https://www.nhatot.com/thue-bat-dong-san-tp-ho-chi-minh?price=15000000-%2A&f=p
+    # 2 URL: URL 1 với f=p (chính chủ filter), URL 2 category-specific để catch tin bị
+    # Nhatot đẩy xuống page sâu vì người đăng không boost (case 132648841 session 18).
+    # Dedup global theo source_id → tin xuất hiện ở cả 2 URL chỉ classify 1 lần.
+    urls:
+      - https://www.nhatot.com/thue-bat-dong-san-tp-ho-chi-minh?price=15000000-%2A&f=p  # All BĐS cho thuê, f=p chính chủ
+      - https://www.nhatot.com/thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh        # Văn phòng/MBKD, sort chronological hơn
     interval_minutes: 20
-    max_pages: 10          # Hard ceiling — early-stop thường kích hoạt trước
-    age_stop_hours: 24     # Dừng khi gặp trang có tin non-VIP cũ hơn 24h
-    dedup_stop_ratio: 0.7  # Dừng khi >70% tin trên trang đã seen
+    max_pages: 10                    # Hard ceiling per URL — early-stop thường kích hoạt trước
+    min_pages_before_early_stop: 5   # Bắt buộc crawl ít nhất 5 page/URL trước khi cho phép early-stop fire
+    age_stop_hours: 24               # Dừng khi gặp trang có tin non-VIP cũ hơn 24h (sau khi qua min_pages)
+    dedup_stop_ratio: 0.7            # Dừng khi >70% tin trên trang đã seen (sau khi qua min_pages)
     request_delay_seconds: 5
 
   - name: alonhadat

@@ -280,3 +280,13 @@ class TestDistrictNormalization:
     def test_empty_safe(self):
         norm = self.classifier._normalize_district
         assert norm("") == ""
+
+    def test_thanh_pho_prefix(self):
+        """Nhatot returns 'Thành phố Thủ Đức' for TP Thủ Đức (special HCMC unit)."""
+        # Real-world case from nhatot/132648841 (session 18 — was being rejected as ngoai_quan)
+        norm = self.classifier._normalize_district
+        assert norm("Thành phố Thủ Đức") == "thu duc"
+        assert norm("TP Thủ Đức") == "thu duc"
+        assert norm("TP. Thủ Đức") == "thu duc"
+        # Regression: city names with no district prefix stay intact
+        assert norm("Thành phố Hà Nội") == "ha noi"

@@ -66,6 +66,31 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-05-28 (session 18) — Nhatot multi-URL + min-pages floor + fix district "Thành phố Thủ Đức"
+- **Trigger**: Vợ gửi URL tin `nhatot/132648841` (Cho thuê tòa nhà mặt phố Thủ Đức, 110M, chính chủ, score 75) — bot đã crawl + classify đúng lúc 12:26 hôm nay nhưng KHÔNG alert. Investigation chỉ ra 2 vấn đề riêng biệt nằm chồng nhau.
+- **Root cause #1 (real blocker cho tin này)** — district normalizer reject "Thành phố Thủ Đức":
+  - Nhatot trả `area_name = "Thành phố Thủ Đức"` (TP Thủ Đức là đơn vị hành chính đặc biệt sáp nhập từ Q2+Q9+Thủ Đức cũ năm 2021).
+  - `_normalize_district` trong `pipeline/classifier.py` không strip prefix "Thành phố" / "TP" / "TP." → `"thanh pho thu duc"` không match `"thu duc"` trong whitelist → reject `ngoai_quan`.
+  - Fix: thêm `thanh\s*pho|tp\.?` vào regex strip prefix. Verify: 7/7 test pass (gồm 3 test case mới `test_thanh_pho_prefix`).
+- **Root cause #2 (broader coverage issue)** — bot có thể miss tin ở page sâu:
+  - Initial hypothesis: tin 132648841 ở page 5 của `?f=p` filter. Bot's `dedup_stop_ratio: 0.7` early-stop fire ở page 1 → bot không reach page 5.
+  - Verify thực tế: tin được bot bắt được hôm nay (sau 2 ngày downtime, page 1 ít dedup hit). Nhưng trong steady-state operation, dedup hit rate cao → vẫn miss tin ở page 5+.
+  - Fix preventive (giống pattern muaban session 17):
+    - Multi-URL config: `url:` (single) → `urls:` (list 2 entries). URL 1 giữ nguyên `?f=p` filter (chính chủ), URL 2 thêm `thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh` (category-specific, sort chronological hơn).
+    - `min_pages_before_early_stop: 5` config mới — bắt buộc crawl ít nhất 5 page/URL trước khi early-stop được phép fire. Pages 1-4 luôn được crawl bất kể dedup ratio.
+- **Refactor** (`spiders/nhatot.py`):
+  - `__init__`: đọc `urls` list trước, fallback `url` single.
+  - `_page_url(start_url, page_num)`: parameterized signature thay vì `self.start_url`.
+  - `fetch_listings`: outer loop cho mỗi URL → gọi `_fetch_pages_from(start_url, loop)`. Stage 2 post-process (same-session count) global cross-URL.
+  - `_fetch_pages_from`: inner crawl logic với check `if page_num < min_pages: skip early-stop` rồi `continue`. Log slug-prefixed: `[nhatot:thue-bat-dong-san-tp-ho-chi-minh] Page 1: ...`.
+- **Pattern source**: 100% copy từ `spiders/muaban.py` session 17. 3 spider giờ đã chuẩn hoá multi-URL pattern (batdongsan, muaban, nhatot).
+- **Verify**:
+  - Multi-URL: bot post-restart log `[nhatot:thue-bat-dong-san-tp-ho-chi-minh] Done: 188 listings` rồi tiếp `[nhatot:thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh] Fetching page 1`. ✅
+  - Min_pages floor: log `Page 1: dedup 10/18 (early-stop disabled until page 5)` ở pages 1-4. ✅
+  - District fix: DB rehydrate tin 132648841 → `district='Thành phố Thủ Đức' → normalized='thu duc' → in whitelist: True`. Score 75, label chinh_chu, price 110M, age 0.05h, tất cả pass alert filters. ✅
+  - Tin này specifically sẽ không re-alert vì đã trong dedup cache, nhưng tin TP Thủ Đức tương lai sẽ alert.
+- **Tests**: +1 test (`test_thanh_pho_prefix`) trong `TestDistrictNormalization` — 3 case (Thành phố/TP/TP.) + 1 regression case (Thành phố Hà Nội không match TP). 7/7 pass.
+
 ### 2026-05-26 (session 17) — Mở rộng muaban: 1 URL → 3 URL (nhà cho thuê + văn phòng/MBKD + nhà xưởng/kho/đất)
 - **Trigger**: Vợ gửi 3 link muaban có tin chính chủ mà bot bỏ sót (BACKLOG item "Mở rộng muaban URL category"). Cụ thể: bot chỉ crawl `cho-thue-van-phong-mat-bang-ho-chi-minh`, miss 2 category `cho-thue-nha-ho-chi-minh` và `cho-thue-nha-xuong-kho-dat-ho-chi-minh`.
 - **Root cause**: KHÔNG phải bug parsing/dedup. Là gap **phạm vi config** — `config/spiders.yaml:54` hardcode `url:` (single string), spider load `self.start_url` rồi loop pages. 2 category còn lại không bao giờ được fetch.

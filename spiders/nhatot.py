@@ -36,9 +36,15 @@ class NhatotSpider(BaseSpider):
 
     def __init__(self, config: dict[str, Any]) -> None:
         super().__init__(config)
-        self.start_url = config.get(
-            "url",
-            "https://www.nhatot.com/thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh",
+        _default_url = "https://www.nhatot.com/thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh"
+        urls_cfg = config.get("urls", None)
+        if urls_cfg:
+            self.start_urls: list[str] = [u.strip() for u in urls_cfg if u and u.strip()]
+        else:
+            self.start_urls = [config.get("url", _default_url)]
+        self.start_url = self.start_urls[0]  # giữ cho compat
+        self.min_pages_before_early_stop: int = int(
+            config.get("min_pages_before_early_stop", 1)
         )
 
     async def fetch_listings(self) -> list[RawListing]:
@@ -53,107 +59,17 @@ class NhatotSpider(BaseSpider):
             )
             return []
 
-        all_listings: list[RawListing] = []
+        self._fetch_impl = StealthyFetcher.fetch
         loop = asyncio.get_running_loop()
-        age_stop_hours: float = self.config.get("age_stop_hours", 24)
-        dedup_stop_ratio: float = self.config.get("dedup_stop_ratio", 0.7)
 
-        for page_num in range(1, self.max_pages + 1):
-            url = self._page_url(page_num)
-            logger.info(f"[nhatot] Fetching page {page_num}: {url}")
-
-            try:
-                page = await loop.run_in_executor(
-                    None,
-                    lambda u=url: StealthyFetcher.fetch(
-                        u,
-                        wait=6000,
-                        timeout=60000,
-                    ),
-                )
-
-                if page is None:
-                    logger.warning(f"[nhatot] No response on page {page_num}")
-                    break
-
-                html = page.html_content or ""
-
-                if "Just a moment" in html or "Checking your browser" in html:
-                    logger.warning("[nhatot] Cloudflare challenge not bypassed!")
-                    break
-
-                # Extract __NEXT_DATA__
-                import json as _json
-                match = re.search(
-                    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-                    html,
-                    re.DOTALL,
-                )
-                if not match:
-                    logger.warning(f"[nhatot] No __NEXT_DATA__ on page {page_num}")
-                    logger.debug(f"[nhatot] HTML snippet: {html[:300]}")
-                    break
-
-                data = _json.loads(match.group(1))
-                adlisting = (
-                    data.get("props", {})
-                    .get("pageProps", {})
-                    .get("initialState", {})
-                    .get("adlisting", {})
-                )
-                ads = adlisting.get("data", {}).get("ads", [])
-
-                if not ads:
-                    logger.info(f"[nhatot] No ads on page {page_num}")
-                    break
-
-                logger.info(f"[nhatot] Found {len(ads)} ads on page {page_num}")
-
-                page_listings: list[RawListing] = []
-                for ad in ads:
-                    listing = self.parse_listing(ad)
-                    if listing is not None:
-                        page_listings.append(listing)
-
-                all_listings.extend(page_listings)
-
-                # Early-stop 1: dedup ratio — chỉ tính tin thường (không tính VIP/sticky)
-                # VIP luôn nằm đầu trang dù cũ → làm phình ratio giả tạo nếu tính vào
-                normal_listings = [l for l in page_listings if not l.is_vip]
-                if self.seen_ids and normal_listings:
-                    seen_count = sum(
-                        1 for l in normal_listings
-                        if f"nhatot:{l.source_id}" in self.seen_ids
-                    )
-                    ratio = seen_count / len(normal_listings)
-                    if ratio >= dedup_stop_ratio:
-                        logger.info(
-                            f"[nhatot] Dedup early-stop page {page_num}: "
-                            f"{seen_count}/{len(normal_listings)} normal seen ({ratio:.0%})"
-                        )
-                        break
-
-                # Early-stop 2: age — stop when non-VIP ads on this page go stale
-                ages = [
-                    l.listing_age_hours for l in page_listings
-                    if not l.is_vip and l.listing_age_hours is not None
-                ]
-                if ages:
-                    oldest = max(ages)
-                    if oldest > age_stop_hours:
-                        logger.info(
-                            f"[nhatot] Age early-stop page {page_num}: "
-                            f"oldest non-VIP = {oldest:.1f}h > {age_stop_hours}h"
-                        )
-                        break
-
+        all_listings: list[RawListing] = []
+        for idx, start_url in enumerate(self.start_urls):
+            url_listings = await self._fetch_pages_from(start_url, loop)
+            all_listings.extend(url_listings)
+            if idx < len(self.start_urls) - 1:
                 await asyncio.sleep(self.request_delay)
 
-            except Exception as e:
-                logger.error(f"[nhatot] Error page {page_num}: {e}")
-                break
-
-        # Post-process: count listings per account
+        # Post-process: count listings per account (global across URLs)
         # Primary key: poster_account_id (stable numeric ID from platform)
         # Fallback: contact_name (for spiders that don't extract account_id)
         from collections import Counter
@@ -172,8 +88,142 @@ class NhatotSpider(BaseSpider):
         if multi_posters:
             logger.info(f"[nhatot] {multi_posters} accounts posted >1 listing this session")
 
-        logger.info(f"[nhatot] Total listings: {len(all_listings)}")
+        logger.info(
+            f"[nhatot] Total listings: {len(all_listings)} từ {len(self.start_urls)} URL(s)"
+        )
         return all_listings
+
+    async def _fetch_pages_from(
+        self, start_url: str, loop: asyncio.AbstractEventLoop
+    ) -> list[RawListing]:
+        """Crawl list pages for a single start_url. Returns listings collected.
+
+        Early-stop (dedup ratio + age) only fires AFTER page_num >= min_pages_before_early_stop.
+        Vì Nhatot không sort thuần chronological — tin chính chủ có thể bị đẩy xuống page 5+
+        do người đăng không boost (xem session 18). Bắt buộc crawl tối thiểu N page mỗi URL
+        để catch những tin này.
+        """
+        slug = start_url.split("/")[-1].split("?")[0]
+        age_stop_hours: float = self.config.get("age_stop_hours", 24)
+        dedup_stop_ratio: float = self.config.get("dedup_stop_ratio", 0.7)
+        min_pages = self.min_pages_before_early_stop
+
+        listings: list[RawListing] = []
+        try:
+            from scrapling import StealthyFetcher
+        except ImportError:
+            return listings
+
+        for page_num in range(1, self.max_pages + 1):
+            url = self._page_url(start_url, page_num)
+            logger.info(f"[nhatot:{slug}] Fetching page {page_num}: {url}")
+
+            try:
+                page = await loop.run_in_executor(
+                    None,
+                    lambda u=url: StealthyFetcher.fetch(
+                        u,
+                        wait=6000,
+                        timeout=60000,
+                    ),
+                )
+
+                if page is None:
+                    logger.warning(f"[nhatot:{slug}] No response on page {page_num}")
+                    break
+
+                html = page.html_content or ""
+
+                if "Just a moment" in html or "Checking your browser" in html:
+                    logger.warning(f"[nhatot:{slug}] Cloudflare challenge not bypassed!")
+                    break
+
+                # Extract __NEXT_DATA__
+                import json as _json
+                match = re.search(
+                    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+                    html,
+                    re.DOTALL,
+                )
+                if not match:
+                    logger.warning(f"[nhatot:{slug}] No __NEXT_DATA__ on page {page_num}")
+                    logger.debug(f"[nhatot:{slug}] HTML snippet: {html[:300]}")
+                    break
+
+                data = _json.loads(match.group(1))
+                adlisting = (
+                    data.get("props", {})
+                    .get("pageProps", {})
+                    .get("initialState", {})
+                    .get("adlisting", {})
+                )
+                ads = adlisting.get("data", {}).get("ads", [])
+
+                if not ads:
+                    logger.info(f"[nhatot:{slug}] No ads on page {page_num}")
+                    break
+
+                logger.info(f"[nhatot:{slug}] Found {len(ads)} ads on page {page_num}")
+
+                page_listings: list[RawListing] = []
+                for ad in ads:
+                    listing = self.parse_listing(ad)
+                    if listing is not None:
+                        page_listings.append(listing)
+
+                listings.extend(page_listings)
+
+                # Min pages floor: pages 1..(min_pages-1) skip early-stop (just log info)
+                normal_listings = [l for l in page_listings if not l.is_vip]
+                if page_num < min_pages:
+                    if self.seen_ids and normal_listings:
+                        seen_count = sum(
+                            1 for l in normal_listings
+                            if f"nhatot:{l.source_id}" in self.seen_ids
+                        )
+                        logger.debug(
+                            f"[nhatot:{slug}] Page {page_num}: dedup {seen_count}/{len(normal_listings)} "
+                            f"(early-stop disabled until page {min_pages})"
+                        )
+                    await asyncio.sleep(self.request_delay)
+                    continue
+
+                # Early-stop 1: dedup ratio — chỉ tính tin thường (không tính VIP/sticky)
+                if self.seen_ids and normal_listings:
+                    seen_count = sum(
+                        1 for l in normal_listings
+                        if f"nhatot:{l.source_id}" in self.seen_ids
+                    )
+                    ratio = seen_count / len(normal_listings)
+                    if ratio >= dedup_stop_ratio:
+                        logger.info(
+                            f"[nhatot:{slug}] Dedup early-stop page {page_num}: "
+                            f"{seen_count}/{len(normal_listings)} normal seen ({ratio:.0%})"
+                        )
+                        break
+
+                # Early-stop 2: age — stop when non-VIP ads on this page go stale
+                ages = [
+                    l.listing_age_hours for l in page_listings
+                    if not l.is_vip and l.listing_age_hours is not None
+                ]
+                if ages:
+                    oldest = max(ages)
+                    if oldest > age_stop_hours:
+                        logger.info(
+                            f"[nhatot:{slug}] Age early-stop page {page_num}: "
+                            f"oldest non-VIP = {oldest:.1f}h > {age_stop_hours}h"
+                        )
+                        break
+
+                await asyncio.sleep(self.request_delay)
+
+            except Exception as e:
+                logger.error(f"[nhatot:{slug}] Error page {page_num}: {e}")
+                break
+
+        logger.info(f"[nhatot:{slug}] Done: {len(listings)} listings")
+        return listings
 
     def parse_listing(self, raw: dict[str, Any]) -> RawListing | None:
         """Parse a single nhatot ad dict into RawListing."""
@@ -299,11 +349,11 @@ class NhatotSpider(BaseSpider):
             logger.error(f"[nhatot] parse_listing error: {e} | id={raw.get('list_id')}")
             return None
 
-    def _page_url(self, page_num: int) -> str:
+    def _page_url(self, start_url: str, page_num: int) -> str:
         if page_num == 1:
-            return self.start_url
+            return start_url
         from urllib.parse import urlparse, urlencode, parse_qs
-        parsed = urlparse(self.start_url)
+        parsed = urlparse(start_url)
         params = parse_qs(parsed.query, keep_blank_values=True)
         params["page"] = [str(page_num)]
         query = urlencode({k: v[0] for k, v in params.items()})
