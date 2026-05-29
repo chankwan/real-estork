@@ -6,12 +6,13 @@ spiders:
   - name: nhatot
     enabled: true
     type: stealthy
-    # 2 URL: URL 1 với f=p (chính chủ filter), URL 2 category-specific để catch tin bị
-    # Nhatot đẩy xuống page sâu vì người đăng không boost (case 132648841 session 18).
-    # Dedup global theo source_id → tin xuất hiện ở cả 2 URL chỉ classify 1 lần.
+    # 2 URL: cả 2 đều dùng f=p (Nhatot's broker filter — strict hơn raw type=u, check
+    # profile-level "broker label" tự đánh bởi Nhatot). URL 1 = all BĐS, URL 2 =
+    # category-specific để catch tin bị đẩy xuống page sâu. Session 19 fix oversight
+    # session 18 (tin 132673950 type=u nhưng môi giới rò qua vì URL 2 thiếu f=p).
     urls:
-      - https://www.nhatot.com/thue-bat-dong-san-tp-ho-chi-minh?price=15000000-%2A&f=p  # All BĐS cho thuê, f=p chính chủ
-      - https://www.nhatot.com/thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh        # Văn phòng/MBKD, sort chronological hơn
+      - https://www.nhatot.com/thue-bat-dong-san-tp-ho-chi-minh?price=15000000-%2A&f=p              # All BĐS cho thuê, chính chủ filter
+      - https://www.nhatot.com/thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh?price=15000000-%2A&f=p  # Văn phòng/MBKD, chính chủ filter
     interval_minutes: 20
     max_pages: 10                    # Hard ceiling per URL — early-stop thường kích hoạt trước
     min_pages_before_early_stop: 5   # Bắt buộc crawl ít nhất 5 page/URL trước khi cho phép early-stop fire

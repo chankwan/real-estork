@@ -66,6 +66,24 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-05-29 (session 19) — Hotfix session 18: thêm f=p vào URL 2 (broker listing rò qua)
+- **Trigger**: Vợ gửi tin `nhatot/132673950` (Kho xưởng Q12, 78M, account "Trần Quyết Chiến", profile Nhatot ghi "Môi giới"). Bot alert score 100 chinh_chu lúc 17:03 hôm nay.
+- **Root cause**: Trong session 18, em decision URL 2 (`thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh`) **không thêm `?f=p`** với reasoning "spider's signal `account_type_business:-25` sẽ tự loại tin môi giới". **Reasoning sai**.
+- **Investigation**:
+  - Tin 132673950 có API field `type=u` (Nhatot trả là Cá nhân) → spider fire `account_type_personal:+25` → score 100.
+  - Nhưng profile thực tế của user này Nhatot đánh badge "Môi giới" (profile-level label, không phản ánh trong API `type` field).
+  - Test: fetch URL 2 với `?f=p` → tin **KHÔNG xuất hiện** trong page 1-3. Fetch không `?f=p` → tin xuất hiện page 2 vị trí 9.
+  - Kết luận: **Nhatot's `f=p` filter strict hơn raw `type=u`** — check thêm 1 lớp profile-level "broker label" (auto-flag bởi Nhatot ML hoặc manual). Account "Trần Quyết Chiến" bị flag dù `type=u`.
+- **Fix** (`config/spiders.yaml`): thêm `?price=15000000-%2A&f=p` vào URL 2:
+  - URL 1 (giữ nguyên): `thue-bat-dong-san-tp-ho-chi-minh?price=15000000-%2A&f=p`
+  - URL 2 (cập nhật): `thue-van-phong-mat-bang-kinh-doanh-tp-ho-chi-minh?price=15000000-%2A&f=p`
+- **Cost của fix**: URL 2 sẽ return ít listings hơn (chỉ "verified personal" theo Nhatot), nhưng:
+  - URL 1 vẫn catch tin chính chủ thuộc category khác (nhà mặt phố, kho, etc.)
+  - Min_pages_before_early_stop=5 vẫn đảm bảo coverage page sâu
+  - Trade-off: false negative (miss vài tin chính chủ) tốt hơn false positive (alert môi giới như case này)
+- **Learning** (cho session sau): KHÔNG bao giờ tin `type=u` raw API là chính chủ thực. Nhatot's `f=p` URL filter là source-of-truth, không phải signal `account_type_personal` trong spider. Khi thêm URL Nhatot, mặc định luôn dùng `?f=p`.
+- **Verify**: bot restart 18:25:40 PID 6132, smoke test pass, config mới load. Future cycles Nhatot URL 2 sẽ không trả tin này. Tin 132673950 đã trong dedup cache → không re-process.
+
 ### 2026-05-28 (session 18) — Nhatot multi-URL + min-pages floor + fix district "Thành phố Thủ Đức"
 - **Trigger**: Vợ gửi URL tin `nhatot/132648841` (Cho thuê tòa nhà mặt phố Thủ Đức, 110M, chính chủ, score 75) — bot đã crawl + classify đúng lúc 12:26 hôm nay nhưng KHÔNG alert. Investigation chỉ ra 2 vấn đề riêng biệt nằm chồng nhau.
 - **Root cause #1 (real blocker cho tin này)** — district normalizer reject "Thành phố Thủ Đức":
