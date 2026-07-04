@@ -54,6 +54,8 @@ class RawListing:
     is_main_street: bool | None = None       # True = mặt tiền/mặt phố, False = hẻm. None = unknown
     poster_account_id: str | None = None     # Platform account ID (more stable than name for dedup)
     property_type: str = ""                  # BDS only: "nha_mat_pho"|"shophouse"|"kho_nha_xuong"|"nha_rieng"|"biet_thu_lien_ke"
+    fb_poster_group_count: int = 0           # FB only (3.3): số group riêng biệt uid đã đăng (tích luỹ DB)
+    fb_poster_post_count: int = 0            # FB only (3.3): tổng post tích luỹ của uid
 
 
     # === Media ===

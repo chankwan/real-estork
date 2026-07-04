@@ -236,9 +236,11 @@ class RealEstorkAgent:
         # ── BOOST DEDUP: Check existing DB status (survives bot restarts) ──
         existing_status = self.db.get_listing_status(listing.source, listing.source_id)
 
-        # ── Hard broker veto 1: cùng tài khoản đăng >4 tin trong 1 batch ──
+        # ── Hard broker veto 1: cùng tài khoản đăng nhiều tin trong 1 batch ──
+        # FB nới ngưỡng (>5 = >=6) vì chủ nhà có thể đăng vài group; portal giữ >4.
         session_count = getattr(listing, "same_session_account_count", 1)
-        if session_count > 4:
+        veto_session_threshold = 5 if listing.source == "facebook_groups" else 4
+        if session_count > veto_session_threshold:
             logger.info(
                 f"[orchestrator] BROKER VETO '{listing.contact_name}': "
                 f"{session_count} listings trong session — bỏ qua alert"
@@ -359,6 +361,28 @@ class RealEstorkAgent:
         }
         topic_id = topic_mapping.get(listing.source)
 
+        # FB (Bước 3.2): routing theo Ý ĐỊNH (§10.6). Broker đã bị loại bởi
+        # veto/score ở trên → tới đây chỉ còn owner/tenant/unknown.
+        #   offer → FBG Chủ (TELEGRAM_FB_CHU_TOPIC_ID | fallback TELEGRAM_FB_TOPIC_ID)
+        #   seek  → FBG Khách (TELEGRAM_FB_KHACH_TOPIC_ID)
+        #   unknown → không gửi (chờ rõ, spec §10.2)
+        fb_intent: str | None = None
+        if listing.source == "facebook_groups":
+            from spiders.facebook_groups import detect_fb_intent
+            fb_intent = detect_fb_intent(listing.description)
+            chu = os.environ.get("TELEGRAM_FB_CHU_TOPIC_ID", "") or os.environ.get("TELEGRAM_FB_TOPIC_ID", "")
+            khach = os.environ.get("TELEGRAM_FB_KHACH_TOPIC_ID", "")
+            if fb_intent == "offer" and chu.isdigit():
+                topic_id = int(chu)
+            elif fb_intent == "seek" and khach.isdigit():
+                topic_id = int(khach)
+            else:
+                logger.info(
+                    f"[orchestrator] FB {listing.source_id}: intent={fb_intent} "
+                    f"→ không route (chờ rõ offer/seek)"
+                )
+                return "intent_unclear"
+
         seen_chats: set[str] = set()
         chats_to_alert: list[str] = []
         for cid in [admin_id, group_id]:
@@ -377,6 +401,7 @@ class RealEstorkAgent:
                 chat_id=chat_id,
                 osint=osint_result,
                 message_thread_id=target_thread,
+                intent=fb_intent,
                 dry_run=self.dry_run
             )
             if sent:
@@ -562,6 +587,92 @@ class RealEstorkAgent:
                 error_message=str(e),
             )
 
+    # =========================================================
+    # FACEBOOK GROUPS CYCLE (PUSH/drain — userscript → ingest queue)
+    # =========================================================
+
+    async def run_facebook_groups_cycle(self) -> None:
+        """
+        Drain cycle cho Facebook groups. Spider không kéo web — nó rút hàng đợi
+        ingest (post do userscript Tampermonkey POST về localhost) rồi đẩy vào
+        pipeline. No-op khi spider disabled hoặc hàng đợi rỗng.
+        """
+        await self._run_facebook_groups_cycle_inner()
+
+    async def _run_facebook_groups_cycle_inner(self) -> None:
+        cycle_start = time.time()
+
+        spider = self.spider_engine.get_spider("facebook_groups")
+        if spider is None:
+            return  # spider disabled → silent no-op (không log spam mỗi 3 phút)
+
+        spider.seen_ids = set(self.dedup.seen_source_ids)
+
+        try:
+            raw_listings = await spider.run()
+            if not raw_listings:
+                return  # hàng đợi rỗng — không có gì để xử lý
+
+            logger.info(f"[orchestrator] 🔄 Facebook cycle: {len(raw_listings)} raw từ ingest")
+            new_listings = self.dedup.filter_new(raw_listings)
+            logger.info(
+                f"[orchestrator] facebook_groups: received {len(raw_listings)}, "
+                f"{len(new_listings)} new sau dedup"
+            )
+            if not new_listings:
+                return
+
+            processed_count = 0
+            alerted_count = 0
+            skip_reasons: Counter = Counter()
+            for listing in new_listings:
+                try:
+                    # 3.3: tích luỹ hồ sơ poster FB (cross-group/cross-session) rồi gắn
+                    # group_count vào listing để classify chấm tín hiệu rải tin (>=5 group).
+                    uid = getattr(listing, "poster_account_id", None)
+                    if uid:
+                        url = listing.source_url or ""
+                        gid = url.split("/groups/", 1)[1].split("/", 1)[0] if "/groups/" in url else ""
+                        poster = self.db.upsert_fb_poster(
+                            uid=uid,
+                            group_id=gid,
+                            display_name=listing.contact_name or "",
+                            phone=listing.phone or "",
+                        )
+                        if poster:
+                            listing.fb_poster_group_count = poster.get("group_count", 0) or 0
+                            listing.fb_poster_post_count = poster.get("post_count", 0) or 0
+                    reason = await self._process_listing(listing)
+                    processed_count += 1
+                    if reason == "alerted":
+                        alerted_count += 1
+                    else:
+                        skip_reasons[reason] += 1
+                except Exception as e:
+                    logger.error(f"[orchestrator] facebook process {listing.source_id}: {e}")
+
+            duration = time.time() - cycle_start
+            skip_summary = _format_skip_summary(skip_reasons)
+            logger.info(
+                f"[orchestrator] ✅ Facebook cycle done: {len(new_listings)} new, "
+                f"{processed_count} processed, {alerted_count} sent to Telegram"
+                f"{' | ' + skip_summary if skip_reasons else ''} | {duration:.1f}s"
+            )
+            self.db.log_spider_run(
+                spider_name="facebook_groups",
+                status="success",
+                listings_found=len(raw_listings),
+                new_listings=len(new_listings),
+                duration_seconds=duration,
+            )
+        except Exception as e:
+            logger.error(f"[orchestrator] Facebook cycle error: {e}")
+            self.db.log_spider_run(
+                spider_name="facebook_groups",
+                status="failed",
+                error_message=str(e),
+            )
+
     async def _check_muaban_token(self) -> None:
         """If muaban token expired, try headless refresh via saved profile."""
         muaban_spider = next(
@@ -663,6 +774,7 @@ class RealEstorkAgent:
             "run_nhatot_cycle": self.run_nhatot_cycle,
             "run_batdongsan_cycle": self.run_batdongsan_cycle,
             "run_muaban_cycle": self.run_muaban_cycle,
+            "run_facebook_groups_cycle": self.run_facebook_groups_cycle,
             "daily_digest": self.daily_digest,
             "weekly_model_comparison": self.weekly_model_comparison,
             "analyze_classification_feedback": self.analyze_classification_feedback,
@@ -784,6 +896,16 @@ class RealEstorkAgent:
                 logger.error(f"[orchestrator] Telegram alert cũng fail: {tg_err}")
             clean_exit = True  # controlled abort, not crash — lock should be cleaned
             sys.exit(1)
+
+        # Start Facebook ingest receiver (localhost) if the spider is enabled.
+        fb_spider = self.spider_engine.get_spider("facebook_groups")
+        if fb_spider is not None:
+            from ingest.fb_receiver import start_receiver
+            cfg = fb_spider.config
+            host = str(cfg.get("ingest_host", "127.0.0.1"))
+            port = int(cfg.get("ingest_port", 8787))
+            token = os.environ.get("FB_INGEST_TOKEN", str(cfg.get("ingest_token", "")))
+            start_receiver(host, port, token)
 
         self.setup_scheduler()
         self.scheduler.start()

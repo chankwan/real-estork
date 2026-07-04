@@ -15,6 +15,7 @@ from spiders.nhatot import NhatotSpider
 from spiders.alonhadat import AlonhadatSpider
 from spiders.batdongsan import BatdongsanSpider
 from spiders.muaban import MuabanSpider
+from spiders.facebook_groups import FacebookGroupsSpider
 
 # Registry: name → class
 SPIDER_REGISTRY: dict[str, type[BaseSpider]] = {
@@ -22,6 +23,7 @@ SPIDER_REGISTRY: dict[str, type[BaseSpider]] = {
     "alonhadat": AlonhadatSpider,
     "batdongsan": BatdongsanSpider,
     "muaban": MuabanSpider,
+    "facebook_groups": FacebookGroupsSpider,
     # Add new spiders here as they're implemented
 }
 

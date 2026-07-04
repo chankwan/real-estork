@@ -1,0 +1,80 @@
+# RealEstork — Facebook Groups Scoring (Bước 3.2)
+# Chiến lược khác hẳn portal: text FB tự do, thưa data (thường thiếu quận/tuổi
+# tin/giá chuẩn). Nguyên tắc §10.4: CHỈ chặn khi CHẮC CHẮN là môi giới; nghi ngờ
+# / thiếu data → vẫn gửi. Vì vậy config này chỉ chứa:
+#   (a) tín hiệu HARD-BROKER (đủ mạnh để 1 mình đẩy score < can_xac_minh = blacklist)
+#   (b) vài tín hiệu owner-positive (thưởng điểm, không bắt buộc)
+# KHÔNG đưa tín hiệu "mềm" (emoji nhiều, superlatives) vào — chủ nhà trên FB xài
+# emoji/lời quảng cáo rất nhiều, dễ oan.
+#
+# Trục ý định (offer/seek) KHÔNG nằm ở đây — nó là routing, tính trong
+# spiders/facebook_groups.py:detect_fb_intent + orchestrator.
+
+version: 1
+base_score: 50
+threshold_chinh_chu: 60
+threshold_can_xac_minh: 40      # score < 40 = moi_gioi = blacklist
+
+alert_filters:
+  wife_min_score: 40             # chỉ chặn broker (score < 40). can_xac_minh (>=40) vẫn gửi
+  wife_max_listing_age_hours: 999999   # FB: KHÔNG loại theo tuổi tin (thường không parse được)
+  wife_min_price_vnd: 0          # FB: KHÔNG loại theo giá
+  allow_missing_district: true   # FB nới: thiếu quận → vẫn gửi (chỉ reject khi parse ĐƯỢC quận & ngoài whitelist)
+  product_min_score: 40
+  wife_allowed_districts:        # parse được quận & ngoài list → mới reject "ngoai_quan"
+    - "Quận 1"
+    - "Quận 2"
+    - "Quận 3"
+    - "Quận 4"
+    - "Quận 5"
+    - "Quận 6"
+    - "Quận 7"
+    - "Quận 8"
+    - "Quận 9"
+    - "Quận 10"
+    - "Quận 11"
+    - "Quận 12"
+    - "Bình Thạnh"
+    - "Phú Nhuận"
+    - "Tân Bình"
+    - "Tân Phú"
+    - "Bình Tân"
+    - "Thủ Đức"
+    - "Gò Vấp"
+
+signals:
+  # ── Owner-positive (thưởng, không bắt buộc) ──────────────────────────────
+  text_owner_language:
+    weight: +10   # "chính chủ", "nhà tôi", "không qua trung gian"
+  description_no_diacritics:
+    weight: +10   # gõ vội trên điện thoại — dấu hiệu chủ nhà
+  account_name_is_phone:
+    weight: +10   # tên nick là SĐT — thường chính chủ
+  listing_very_fresh:
+    weight: +5
+  listing_fresh:
+    weight: +3
+
+  # ── HARD-BROKER: cross-marketplace qua SĐT (mạnh nhất, §10.3.3) ──────────
+  phone_known_broker:
+    weight: -100  # SĐT đã nằm trong broker_phones (portal) → chắc chắn môi giới
+  phone_multi_platform:
+    weight: -40   # SĐT xuất hiện >=3 platform → môi giới rải nhiều sàn
+  phone_multi_listing_same_platform:
+    weight: -40   # SĐT >=5 listing trên 1 sàn → môi giới
+
+  # ── HARD-BROKER: tên / text ─────────────────────────────────────────────
+  account_name_broker_keywords:
+    weight: -40   # nick chứa "môi giới"/"bđs"/"công ty"/"land"...
+  text_commission_mention:
+    weight: -40   # nhắc "hoa hồng"/"phí môi giới" → môi giới
+  text_agent_language:
+    weight: -30   # "chuyên bds"/"hotline"/"chuyên gia tư vấn"
+
+  # ── HARD-BROKER: spam trong phiên (§10.3.2 #2a, ngưỡng >=6) ──────────────
+  fb_broker_session_spam:
+    weight: -50   # 1 nick đăng >=6 post trong 1 batch drain → môi giới rải tin
+
+  # ── HARD-BROKER: rải tin cross-group tích luỹ DB (§10.3.2 #1, Bước 3.3) ───
+  fb_broker_multi_group:
+    weight: -60   # uid ở >=5 group riêng biệt (fb_posters.group_count) → môi giới rải tin theo ngày

@@ -18,7 +18,7 @@ from pipeline.signals import SIGNAL_FUNCTIONS, SignalContext
 
 # Per-source scoring overrides. Any source listed here will auto-load
 # config/scoring_{source}.yaml if the file exists (falls back to default otherwise).
-PER_SOURCE_CONFIGS: tuple[str, ...] = ("batdongsan", "muaban")
+PER_SOURCE_CONFIGS: tuple[str, ...] = ("batdongsan", "muaban", "facebook_groups")
 
 # Classification labels
 LABEL_CHINH_CHU = "chinh_chu"
@@ -267,14 +267,17 @@ class ClassificationPipeline:
         # District whitelist — empty list means allow all
         allowed = filters.get("wife_allowed_districts", [])
         if allowed:
-            normalized_allowed = {self._normalize_district(d) for d in allowed}
             listing_district = self._normalize_district(listing.district or "")
-            if listing_district not in normalized_allowed:
-                logger.debug(
-                    f"[classifier] District '{listing.district}' → '{listing_district}' "
-                    f"not in whitelist, skipping alert"
-                )
-                return False
+            # Relaxed (FB): parse không ra quận → không loại (spec §10.4). Chỉ reject
+            # khi parse ĐƯỢC quận nhưng ngoài whitelist.
+            if not (not listing_district and filters.get("allow_missing_district", False)):
+                normalized_allowed = {self._normalize_district(d) for d in allowed}
+                if listing_district not in normalized_allowed:
+                    logger.debug(
+                        f"[classifier] District '{listing.district}' → '{listing_district}' "
+                        f"not in whitelist, skipping alert"
+                    )
+                    return False
 
         # Main street filter — opt-in, disabled by default
         if filters.get("wife_main_street_only", False):
@@ -302,9 +305,11 @@ class ClassificationPipeline:
             return "gia_thap"
         allowed = filters.get("wife_allowed_districts", [])
         if allowed:
-            normalized_allowed = {self._normalize_district(d) for d in allowed}
-            if self._normalize_district(listing.district or "") not in normalized_allowed:
-                return "ngoai_quan"
+            listing_district = self._normalize_district(listing.district or "")
+            if not (not listing_district and filters.get("allow_missing_district", False)):
+                normalized_allowed = {self._normalize_district(d) for d in allowed}
+                if listing_district not in normalized_allowed:
+                    return "ngoai_quan"
         if filters.get("wife_main_street_only", False):
             if getattr(listing, "is_main_street", None) is not True:
                 return "pho_phu"

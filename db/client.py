@@ -294,6 +294,96 @@ class SupabaseDB:
             return 0
 
     # =========================================================
+    # FB POSTERS (Bước 3.3 — tích luỹ hồ sơ poster Facebook cross-group)
+    # =========================================================
+
+    def get_fb_poster(self, uid: str) -> dict[str, Any]:
+        """Return accumulated FB poster profile by uid, or {} if none/table missing."""
+        if not uid:
+            return {}
+        try:
+            result = (
+                self.client.table("fb_posters")
+                .select("*")
+                .eq("uid", uid)
+                .maybe_single()
+                .execute()
+            )
+            return result.data or {}
+        except Exception:
+            return {}
+
+    def upsert_fb_poster(
+        self,
+        uid: str,
+        group_id: str = "",
+        display_name: str = "",
+        phone: str = "",
+    ) -> dict | None:
+        """Accumulate one FB post into the poster profile (keyed by uid).
+
+        Adds group_id to groups_seen (distinct) + recomputes group_count,
+        increments post_count, appends phone. Returns the updated profile row
+        (so caller can read group_count for scoring). Degrades to None if the
+        fb_posters table doesn't exist yet — signal simply won't fire.
+        """
+        if not uid:
+            return None
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            existing = self.get_fb_poster(uid)
+            if existing:
+                groups = list(existing.get("groups_seen") or [])
+                if group_id and group_id not in groups:
+                    groups.append(group_id)
+                phones = list(existing.get("phones") or [])
+                if phone and phone not in phones:
+                    phones.append(phone)
+                payload = {
+                    "groups_seen": groups,
+                    "group_count": len(groups),
+                    "post_count": (existing.get("post_count") or 0) + 1,
+                    "phones": phones,
+                    "display_name": display_name or existing.get("display_name"),
+                    "last_seen": now_iso,
+                }
+                result = (
+                    self.client.table("fb_posters")
+                    .update(payload)
+                    .eq("uid", uid)
+                    .execute()
+                )
+                return result.data[0] if result.data else {**existing, **payload}
+            else:
+                groups = [group_id] if group_id else []
+                phones = [phone] if phone else []
+                payload = {
+                    "uid": uid,
+                    "display_name": display_name or None,
+                    "groups_seen": groups,
+                    "group_count": len(groups),
+                    "post_count": 1,
+                    "phones": phones,
+                    "last_seen": now_iso,
+                }
+                result = self.client.table("fb_posters").insert(payload).execute()
+                return result.data[0] if result.data else payload
+        except Exception as e:
+            msg = str(e)
+            if "fb_posters" in msg and ("PGRST205" in msg or "Could not find the table" in msg):
+                # Bảng chưa tạo — degrade an toàn, log 1 LẦN thay vì spam mỗi post.
+                if not getattr(self, "_fb_posters_warned", False):
+                    logger.warning(
+                        "[db] Bảng fb_posters chưa tồn tại — chạy schema.sql trong Supabase. "
+                        "Tín hiệu cross-group (fb_broker_multi_group) tạm tắt (an toàn)."
+                    )
+                    self._fb_posters_warned = True
+            else:
+                logger.error(f"[db] upsert_fb_poster error: {e}")
+            return None
+
+    # =========================================================
     # FEEDBACK (Learning Loop)
     # =========================================================
 

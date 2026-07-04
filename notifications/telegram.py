@@ -79,13 +79,14 @@ class TelegramNotifier:
         chat_id: int | str,
         osint: dict | None = None,
         message_thread_id: int | None = None,
+        intent: str | None = None,
         dry_run: bool = False,
     ) -> bool:
         """Send property alert to a specific Telegram chat/channel."""
         if not self.is_configured:
             return False
 
-        message = self._format_listing_message(listing, result, osint)
+        message = self._format_listing_message(listing, result, osint, intent)
 
         if dry_run:
             logger.info(f"[telegram][DRY_RUN] Would send to {chat_id} (topic {message_thread_id}):\n{message}")
@@ -111,6 +112,7 @@ class TelegramNotifier:
         listing: Any,
         result: Any,
         osint: dict | None,
+        intent: str | None = None,
     ) -> str:
         """Format the listing alert in HTML for Telegram."""
         e = html.escape  # All user-provided text must be escaped for strict HTML parsers
@@ -161,6 +163,8 @@ class TelegramNotifier:
             phone_display = "🔒 SĐT ẩn — mở app nhatot"
         elif listing.source == "batdongsan":
             phone_display = "🔒 SĐT ẩn — mở app BĐS"
+        elif listing.source == "facebook_groups":
+            phone_display = "📋 SĐT trong nội dung post — mở link"
         else:
             phone_display = "Chưa có SĐT"
 
@@ -174,14 +178,33 @@ class TelegramNotifier:
         ]
         if prop_label:
             lines.append(f"{prop_emoji} <b>{prop_label}</b>")
+        lines.append("")
+        # 📍 địa chỉ — bỏ qua nếu trống (FB không có địa chỉ chuẩn)
+        if listing.address:
+            lines.append(f"📍 <i>{e(listing.address)}</i>")
+        # 💰 dòng giá — bỏ qua khi hoàn toàn trống (FB thường không parse được giá)
+        if price_text or area_text or floor_text or street_tag:
+            lines.append(f"💰 <b>{e(price_text)}</b>{area_text}{floor_text}{street_tag}")
+        # FB: link group không preview được → nhúng thẳng nội dung post vào message
+        if listing.source == "facebook_groups":
+            desc = (listing.description or "").strip()
+            if desc:
+                snippet = desc[:600] + ("…" if len(desc) > 600 else "")
+                lines.extend(["", f"📝 <i>{e(snippet)}</i>"])
+        # Link label — FB: phân biệt permalink bài thật (userscript moi được từ
+        # set=gm/pcb → /posts/ hoặc /commerce/listing/) vs fallback link người đăng
+        # (/user/ hoặc trang group). Chỉ khi có link bài mới ghi "Link chi tiết".
+        if listing.source == "facebook_groups":
+            _url = listing.source_url or ""
+            _is_real_permalink = ("/posts/" in _url) or ("/commerce/listing/" in _url)
+            link_label = "🔗 Link chi tiết" if _is_real_permalink else "👤 Xem người đăng + các tin khác"
+        else:
+            link_label = "Xem ảnh &amp; chi tiết"
         lines.extend([
-            "",
-            f"📍 <i>{e(listing.address or '')}</i>",
-            f"💰 <b>{e(price_text)}</b>{area_text}{floor_text}{street_tag}",
             "",
             f"📞 <b>{e(phone_display)}</b>{contact_part}",
             "",
-            f'<a href="{listing.source_url}">Xem ảnh &amp; chi tiết ({listing.source})</a>',
+            f'<a href="{listing.source_url}">{link_label} ({listing.source})</a>',
         ])
         msg = "\n".join(lines)
 
@@ -197,6 +220,12 @@ class TelegramNotifier:
             if lines:
                 msg += "\n\n<b>📊 OSINT:</b>\n" + "\n".join(lines)
 
-        # Append source hashtag for "All" topic visibility
-        msg += f"\n\n{prop_tag}#{listing.source} | <code>{listing.source}-{e(listing.source_id)}</code>"
+        # Append source hashtag for "All" topic visibility.
+        # FB: thêm sub-tag theo intent để bấm xem riêng Chủ / Khách. Giữ
+        # #facebook_groups (bấm → xem CẢ hai loại).
+        source_tag = f"#{listing.source}"
+        if listing.source == "facebook_groups" and intent in ("offer", "seek"):
+            sub = "chu" if intent == "offer" else "khach"
+            source_tag = f"#{listing.source} #{listing.source}_{sub}"
+        msg += f"\n\n{prop_tag}{source_tag} | <code>{listing.source}-{e(listing.source_id)}</code>"
         return msg

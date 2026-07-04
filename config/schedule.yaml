@@ -16,6 +16,11 @@ schedules:
     function: run_batdongsan_cycle
     enabled: true
 
+  facebook_groups_cycle:
+    interval_minutes: 3          # Drain ingest queue (cheap; no-op khi spider disabled)
+    function: run_facebook_groups_cycle
+    enabled: true
+
   daily_digest:
     cron: "0 8 * * *"            # 8:00 AM daily
     function: daily_digest

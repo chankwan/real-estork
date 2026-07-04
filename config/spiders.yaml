@@ -73,14 +73,25 @@ spiders:
     interval_minutes: 60
 
   - name: facebook_groups
-    enabled: false      # Enable khi ready
-    type: http
-    # pip install facebook-scraper (public groups only, MVP free)
-    interval_minutes: 60
+    enabled: true       # Go-live 2026-06-26: ingest receiver chạy khi bot start.
+    type: push          # PUSH model: userscript Tampermonkey POST về localhost (KHÔNG pull web)
+    interval_minutes: 3 # ignored — scheduling ở config/schedule.yaml (facebook_groups_cycle)
+    # Ingest receiver (localhost-only). Userscript phải dùng cùng port + token.
+    # Token thực: set FB_INGEST_TOKEN trong .env (override giá trị dưới đây).
+    ingest_host: "127.0.0.1"
+    ingest_port: 8787
+    ingest_token: "CHANGE_ME_realestork_fb"
+    # 9 group đóng — userscript xoay vòng qua các URL này (điền group thật trước go-live)
     groups:
-      - "cho.thue.mat.bang.kinh.doanh.tphcm"
-      - "sang.nhuong.quan.cho.thue.mat.bang.tphcm"
-      - "Cho-Thue-Mat-Bang-KINH-DOANH-TpHCM"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_1"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_2"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_3"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_4"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_5"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_6"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_7"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_8"
+      - "https://www.facebook.com/groups/REPLACE_GROUP_9"
 
   - name: zalo_web
     enabled: false      # Optional, risk bị block account

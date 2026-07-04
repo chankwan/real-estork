@@ -46,6 +46,8 @@ class SignalContext:
     account_type: str | None = None           # "u"=personal, "s"=business, None=unknown
     contact_name: str = ""                    # Seller display name (for broker keyword check)
     same_session_account_count: int = 1       # How many listings same account posted in this crawl batch
+    fb_poster_group_count: int = 0            # FB (3.3): số group riêng biệt uid đã đăng (tích luỹ DB)
+    fb_poster_post_count: int = 0             # FB (3.3): tổng post tích luỹ của uid
 
     # Batdongsan-specific (only populated after detail/guru-profile enrichment)
     poster_profile_hash: str | None = None    # Presence → profile fetched (strict guard for BDS signals)
@@ -109,6 +111,8 @@ class SignalContext:
             account_type=getattr(listing, "account_type", None),
             contact_name=getattr(listing, "contact_name", None) or "",
             same_session_account_count=getattr(listing, "same_session_account_count", 1),
+            fb_poster_group_count=getattr(listing, "fb_poster_group_count", 0),
+            fb_poster_post_count=getattr(listing, "fb_poster_post_count", 0),
             phone_hidden=getattr(listing, "phone_hidden", False),
             poster_profile_hash=getattr(listing, "poster_profile_hash", None),
             poster_join_year=getattr(listing, "poster_join_year", None),
@@ -207,6 +211,17 @@ def check_account_name_broker_keywords(ctx: SignalContext) -> bool:
 def check_same_session_multi_listing(ctx: SignalContext) -> bool:
     """Cùng 1 tài khoản đăng >2 tin trong cùng batch crawl — broker pattern. 2 tin có thể chủ có 2 mặt bằng."""
     return ctx.same_session_account_count > 2
+
+def check_fb_broker_session_spam(ctx: SignalContext) -> bool:
+    """Facebook: 1 nick đăng >=6 post trong 1 batch drain → môi giới rải tin.
+    Ngưỡng nới hơn same_session_multi_listing (>2) vì chủ FB có thể đăng vài group.
+    (Cross-group tích luỹ cross-session ở fb_broker_multi_group — DB fb_posters.)"""
+    return ctx.same_session_account_count >= 6
+
+def check_fb_broker_multi_group(ctx: SignalContext) -> bool:
+    """Facebook (3.3): uid xuất hiện ở >=5 group RIÊNG BIỆT (tích luỹ DB, cross-session)
+    → môi giới rải tin theo ngày. Chủ nhà hiếm khi đăng cùng 1 nhà ở 5+ group khác nhau."""
+    return ctx.fb_poster_group_count >= 5
 
 _EMOJI_PATTERN = None
 def check_description_many_emojis(ctx: SignalContext) -> bool:
@@ -402,6 +417,8 @@ SIGNAL_FUNCTIONS: dict[str, Any] = {
     "seller_high_sold_count": check_seller_high_sold_count,
     "account_name_broker_keywords": check_account_name_broker_keywords,
     "same_session_multi_listing": check_same_session_multi_listing,
+    "fb_broker_session_spam": check_fb_broker_session_spam,
+    "fb_broker_multi_group": check_fb_broker_multi_group,
     "description_many_emojis": check_description_many_emojis,
     "phone_hidden_owner": check_phone_hidden_owner,
     "account_type_personal": check_account_type_personal,

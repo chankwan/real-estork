@@ -191,6 +191,25 @@ CREATE INDEX IF NOT EXISTS idx_subscribers_tier ON alert_subscribers(subscriptio
 CREATE INDEX IF NOT EXISTS idx_subscribers_active ON alert_subscribers(is_active);
 
 -- =====================================================
+-- FB POSTERS (Bước 3.3) — tích luỹ hồ sơ poster Facebook theo uid,
+-- cross-session/cross-group → nền cho tín hiệu môi giới rải tin.
+-- =====================================================
+CREATE TABLE IF NOT EXISTS fb_posters (
+    uid TEXT PRIMARY KEY,                  -- Facebook user id (từ /groups/<gid>/user/<uid>)
+    display_name TEXT,                     -- tên hiển thị (best-effort)
+    groups_seen TEXT[] DEFAULT '{}',       -- các group_id RIÊNG BIỆT uid đã đăng
+    group_count INTEGER DEFAULT 0,         -- len(groups_seen) — query ngưỡng >=5 nhanh
+    post_count INTEGER DEFAULT 0,          -- tổng post đã thấy từ uid (tích luỹ)
+    phones TEXT[] DEFAULT '{}',            -- SĐT trích từ các post của uid
+    classification TEXT DEFAULT 'unknown', -- chu | khach | moi_gioi | unknown
+    broker_confidence NUMERIC DEFAULT 0,   -- 0-1, tăng dần theo tín hiệu
+    first_seen TIMESTAMPTZ DEFAULT NOW(),
+    last_seen TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fb_posters_groupcount ON fb_posters(group_count);
+CREATE INDEX IF NOT EXISTS idx_fb_posters_class ON fb_posters(classification);
+
+-- =====================================================
 -- ROW LEVEL SECURITY (optional for future Web UI)
 -- =====================================================
 
