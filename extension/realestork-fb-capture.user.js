@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RealEstork FB Group Capture
 // @namespace    realestork
-// @version      1.0.0
+// @version      1.1.3
 // @description  Passive capture post chính chủ từ group Facebook đóng → POST về bot localhost. Đọc THỤ ĐỘNG màn hình FB của 1 account thật (profile riêng), tự cuộn + xoay vòng group. KHÔNG tự đăng nhập, KHÔNG bơm traffic lạ.
 // @author       RealEstork
 // @match        https://www.facebook.com/groups/*
@@ -9,6 +9,7 @@
 // @noframes
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @connect      127.0.0.1
 // @connect      localhost
 // ==/UserScript==
@@ -77,10 +78,29 @@
     try { return new Set(JSON.parse(localStorage.getItem(LS_SEEN) || '[]')); }
     catch (e) { return new Set(); }
   }
+  // localStorage.setItem ném QuotaExceededError khi origin facebook.com đầy storage
+  // (FB xài gần hết quota). Nếu ném ngay TRƯỚC lệnh điều hướng → rotation chết (đây
+  // CHÍNH là bug "kẹt không nhảy"). safeSet: thử set; đầy thì dọn bớt seen set của
+  // MÌNH để nhường chỗ rồi thử lại; vẫn đầy thì bỏ qua — TUYỆT ĐỐI không ném.
+  function safeSet(key, val) {
+    try { localStorage.setItem(key, val); return true; }
+    catch (e) {
+      try {
+        const arr = JSON.parse(localStorage.getItem(LS_SEEN) || '[]');
+        if (arr.length > 500) localStorage.setItem(LS_SEEN, JSON.stringify(arr.slice(-500)));
+        else localStorage.removeItem(LS_SEEN);
+        localStorage.setItem(key, val);
+        return true;
+      } catch (e2) {
+        console.log('[RealEstork] localStorage đầy — bỏ qua set ' + key + ' (' + (e2 && e2.name) + ')');
+        return false;
+      }
+    }
+  }
   function saveSeen(set) {
     let arr = [...set];
     if (arr.length > CONFIG.maxSeen) arr = arr.slice(arr.length - CONFIG.maxSeen);
-    try { localStorage.setItem(LS_SEEN, JSON.stringify(arr)); } catch (e) {}
+    safeSet(LS_SEEN, JSON.stringify(arr));
   }
   const seen = loadSeen();
   const inflight = new Set();   // post đang chờ POST 200 — tránh gửi trùng trong lúc chờ
@@ -317,12 +337,38 @@
     const found = CONFIG.groups.findIndex((g) => here.startsWith(g.replace(/\/$/, '')));
     if (found >= 0) idx = found;
   }
+  // Điều hướng CỨNG. `location.href=` TRONG sandbox Tampermonkey là NO-OP (đã xác
+  // minh: gõ tay cùng URL trong Console/page-context thì trang nhảy, nhưng script
+  // gán thì đứng im). => ưu tiên unsafeWindow.location (window THẬT của trang, đúng
+  // ngữ cảnh Console). Fallback nhiều lớp + log lỗi để không câm lặng.
+  function hardNav(url) {
+    try {
+      if (typeof unsafeWindow !== 'undefined' && unsafeWindow && unsafeWindow.location) {
+        unsafeWindow.location.href = url;
+        return;
+      }
+    } catch (e) { console.log('[RealEstork] unsafeWindow nav lỗi:', e); }
+    try { window.location.assign(url); return; } catch (e) { console.log('[RealEstork] assign lỗi:', e); }
+    try { location.href = url; } catch (e) { console.log('[RealEstork] href lỗi:', e); }
+  }
+
+  // URL group kế + CHỐNG navigation no-op: nếu target trùng URL hiện tại (vd list
+  // chỉ còn 1 group, hoặc FB canonical hoá về đúng URL đang đứng) thì gán
+  // location.href sẽ KHÔNG nạp lại trang → kẹt. Thêm cache-buster ép reload thật.
+  function buildRotateTarget(nextIdx) {
+    let target = withSort(CONFIG.groups[nextIdx]);
+    if (target.split('#')[0] === location.href.split('#')[0]) {
+      target += (target.includes('?') ? '&' : '?') + '_rt=' + Date.now();
+    }
+    return target;
+  }
   function rotateNext() {
     if (!CONFIG.rotate || CONFIG.groups.length === 0) return;
     idx = (idx + 1) % CONFIG.groups.length;
-    localStorage.setItem(LS_IDX, String(idx));
+    safeSet(LS_IDX, String(idx));
     log('chuyển sang group ' + (idx + 1) + '/' + CONFIG.groups.length);
-    setTimeout(() => { location.href = withSort(CONFIG.groups[idx]); }, 1500);
+    const target = buildRotateTarget(idx);
+    setTimeout(() => { hardNav(target); }, 1500);
   }
 
   // ---- main tick (có cơ chế CHỜ ẢNH RENDER để moi permalink chi tiết) ----
@@ -411,7 +457,7 @@
   if (CONFIG.rotate && CONFIG.sortParam) {
     const sortKey = CONFIG.sortParam.split('=')[0];
     if (sortKey && currentGroupId() && !location.search.includes(sortKey + '=')) {
-      location.href = location.href.split('?')[0].split('#')[0] + '?' + CONFIG.sortParam;
+      hardNav(location.href.split('?')[0].split('#')[0] + '?' + CONFIG.sortParam);
       return;
     }
   }
@@ -425,5 +471,28 @@
     const dwell = rnd(CONFIG.dwellMs[0], CONFIG.dwellMs[1]);
     rotateAt = Date.now() + dwell;
     dwellTimer = setTimeout(() => doRotate('hết thời gian ở group → xoay'), dwell);
+
+    // ── WATCHDOG (độc lập, doRotate KHÔNG xoá) ──────────────────────────────
+    // Toàn bộ vòng xoay dựa trên "reload → script chạy lại → set timer mới". Nếu
+    // reload không trọn vẹn (FB nuốt navigation, script chết lúc load, tab hidden
+    // không render, hoặc doRotate đã clear timer + kẹt rotating=true), mọi timer
+    // biến mất và script đứng im vô hạn. Watchdog là interval RIÊNG: cứ 15s kiểm
+    // "ở group này bao lâu rồi", quá trần cứng thì ÉP nhảy group bất kể trạng thái
+    // nội bộ. Trần > dwell max để không cắt nhầm group đang chạy lành mạnh.
+    const HARD_CAP_MS = Math.max(CONFIG.dwellMs[1] + 60000, 180000);
+    let watchdogFired = false;
+    setInterval(() => {
+      if (watchdogFired) return;
+      const elapsed = Date.now() - groupEnteredAt;
+      if (elapsed <= HARD_CAP_MS) return;
+      watchdogFired = true;
+      log('WATCHDOG: kẹt ' + Math.round(elapsed / 1000) + 's → ép nhảy group');
+      rotating = false;                        // thoát deadlock
+      if (capTimer) clearInterval(capTimer);
+      if (dwellTimer) clearTimeout(dwellTimer);
+      idx = (idx + 1) % CONFIG.groups.length;  // ép sang group kế
+      safeSet(LS_IDX, String(idx));            // safeSet: quota đầy cũng KHÔNG ném chặn nav
+      hardNav(buildRotateTarget(idx));         // unsafeWindow + chống no-op → luôn nạp lại
+    }, 15000);
   }
 })();
