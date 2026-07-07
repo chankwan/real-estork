@@ -18,7 +18,8 @@ threshold_can_xac_minh: 40      # score < 40 = moi_gioi = blacklist
 alert_filters:
   wife_min_score: 40             # chỉ chặn broker (score < 40). can_xac_minh (>=40) vẫn gửi
   wife_max_listing_age_hours: 999999   # FB: KHÔNG loại theo tuổi tin (thường không parse được)
-  wife_min_price_vnd: 20000000   # FB: chỉ gửi tin CHỦ cho thuê >= 20M. Tin KHÔNG parse được giá vẫn gửi (lọc lỏng — guard `and price` trong alert_skip_reason)
+  wife_min_price_vnd: 0          # FB: KHÔNG lọc giá global (áp cả Chủ + Khách). Filter giá Chủ chuyển sang fb_offer_min_price_vnd (offer-only) — tin Khách nhận MỌI giá
+  fb_offer_min_price_vnd: 20000000   # CHỈ tin Chủ (offer): giá < 20M → bỏ (gia_thap). Không parse được giá → vẫn gửi (lọc lỏng). Đọc trong orchestrator routing, KHÔNG áp cho seek
   allow_missing_district: true   # FB nới: thiếu quận → vẫn gửi (chỉ reject khi parse ĐƯỢC quận & ngoài whitelist)
   product_min_score: 40
   wife_allowed_districts:        # parse được quận & ngoài list → mới reject "ngoai_quan"

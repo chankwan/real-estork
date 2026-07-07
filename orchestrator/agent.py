@@ -373,14 +373,19 @@ class RealEstorkAgent:
             chu = os.environ.get("TELEGRAM_FB_CHU_TOPIC_ID", "") or os.environ.get("TELEGRAM_FB_TOPIC_ID", "")
             khach = os.environ.get("TELEGRAM_FB_KHACH_TOPIC_ID", "")
             if fb_intent == "offer" and chu.isdigit():
+                # Tin Chủ (cho thuê): chỉ gửi khi giá >= fb_offer_min_price_vnd (mặc định
+                # 20M). Không parse được giá (None) → vẫn gửi (lọc lỏng). Filter này CHỈ
+                # cho offer — tin Khách (seek) bên dưới nhận MỌI giá.
+                offer_min = self.classifier._alert_filters_for("facebook_groups").get("fb_offer_min_price_vnd", 0)
+                if offer_min and listing.price_vnd_monthly and listing.price_vnd_monthly < offer_min:
+                    logger.info(
+                        f"[orchestrator] FB {listing.source_id}: offer giá "
+                        f"{listing.price_vnd_monthly} < {offer_min} → gia_thap"
+                    )
+                    return "gia_thap"
                 topic_id = int(chu)
-            elif fb_intent == "seek":
-                # TẠM NGƯNG gửi tin Khách (seek) — 2026-07-07 (tập trung tin Chủ cho thuê).
-                # Bật lại: thay 2 dòng dưới bằng
-                #     if khach.isdigit(): topic_id = int(khach)
-                #     else: return "intent_unclear"
-                logger.info(f"[orchestrator] FB {listing.source_id}: seek → tạm ngưng (khach_paused)")
-                return "khach_paused"
+            elif fb_intent == "seek" and khach.isdigit():
+                topic_id = int(khach)
             else:
                 logger.info(
                     f"[orchestrator] FB {listing.source_id}: intent={fb_intent} "
