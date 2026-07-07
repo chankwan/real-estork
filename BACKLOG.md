@@ -66,8 +66,8 @@ _(không có item chờ)_
 - **Đề xuất**: mở rộng từ khoá offer (vd "cho thuê", "cần cho thuê", "còn trống", giá + diện tích + địa chỉ = tín hiệu offer ngầm), cân nhắc heuristic "có SĐT + giá + địa chỉ" → coi là offer.
 - **Mức độ**: cao — đây là nút thắt recall thật, filter giá hôm nay vô nghĩa nếu tin không lọt qua bước intent.
 
-### Bật lại tin Khách (seek) khi cần
-- Hiện **tạm ngưng** (session 2026-07-07, `orchestrator/agent.py` nhánh `khach_paused`). Bật lại: theo comment ngay tại chỗ — khôi phục route sang `TELEGRAM_FB_KHACH_TOPIC_ID`.
+### ~~Bật lại tin Khách (seek)~~ ✅ Đã bật lại (2026-07-07, commit 3678fdf)
+- Tin Khách nhận MỌI giá. Filter ≥20M chuyển sang `fb_offer_min_price_vnd` (offer-only) — chỉ áp cho tin Chủ.
 
 ### Userscript re-send tin đã seen (0-new drains) — lãng phí quét
 - **Triệu chứng**: log `received N, 0 new sau dedup` — userscript gửi lại tin đã có trong DB do `seen` (localStorage trình duyệt) lệch với dedup DB của bot (localStorage bị FB làm đầy/xoá, hoặc reset khi reload).
