@@ -374,8 +374,13 @@ class RealEstorkAgent:
             khach = os.environ.get("TELEGRAM_FB_KHACH_TOPIC_ID", "")
             if fb_intent == "offer" and chu.isdigit():
                 topic_id = int(chu)
-            elif fb_intent == "seek" and khach.isdigit():
-                topic_id = int(khach)
+            elif fb_intent == "seek":
+                # TẠM NGƯNG gửi tin Khách (seek) — 2026-07-07 (tập trung tin Chủ cho thuê).
+                # Bật lại: thay 2 dòng dưới bằng
+                #     if khach.isdigit(): topic_id = int(khach)
+                #     else: return "intent_unclear"
+                logger.info(f"[orchestrator] FB {listing.source_id}: seek → tạm ngưng (khach_paused)")
+                return "khach_paused"
             else:
                 logger.info(
                     f"[orchestrator] FB {listing.source_id}: intent={fb_intent} "
