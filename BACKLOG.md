@@ -52,6 +52,14 @@ _(không có item chờ)_
 ### Gắn `bot-fb-scan.bat` vào Task Scheduler -AtLogon (Mức 2 auto-start capture)
 - Sau khi xác nhận cờ + virtual desktop/minimize chạy ổn định vài ngày: mirror `bot-start-headless` → capture Chrome tự bật khi đăng nhập Windows, khỏi double-click tay.
 
+### Chống flood thông báo Telegram FB (theo topic) — đang nghiên cứu
+- **Vấn đề (2026-07-08)**: Alert FB ping ngập máy vợ + đồng nghiệp → user tạm tắt FB (switch-off Tampermonkey).
+- **2 hướng giải**:
+  - **Tầng 1 (native, per-user, 0 code)**: mỗi người mute topic FB Chủ/Khách trong forum group (nhấn giữ topic → Mute); portal topic vẫn ping. Tin vẫn tới, chỉ không ping.
+  - **Tầng 2 (bot, cả group, 1 sửa nhỏ)**: bot gửi tin FB với `disable_notification=True` → hiện trong topic nhưng KHÔNG ping ai; portal vẫn ping. Biến thể: group im + vẫn ping riêng chat admin của vợ.
+- **Cần chốt trước khi làm**: vợ có muốn còn ping realtime cho tin Chủ giá trị không → quyết Tầng 1 vs Tầng 2 vs biến thể.
+- **Chỗ sửa nếu chọn Tầng 2**: `notifications/telegram.py` → `send_listing_alert` (thêm `disable_notification` theo source == facebook_groups).
+
 ### Watchdog Mức 3: heartbeat capture (phát hiện capture chết)
 - **Điểm mù hiện tại**: Bot không biết capture FB đã chết hay chỉ hết tin (receiver 0 post = mơ hồ). 
 - **Đề xuất**: bot theo dõi thời gian từ post FB cuối cùng; im quá X phút (giờ hoạt động) → Telegram cảnh báo "capture FB có thể đã dừng".
