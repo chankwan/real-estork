@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -26,11 +27,22 @@ _MAX_BODY_BYTES = 8 * 1024 * 1024  # 8 MB hard cap / request
 _inbox: "queue.Queue[dict[str, Any]]" = queue.Queue()
 _token: str = ""
 _server: ThreadingHTTPServer | None = None
+# Heartbeat: userscript ping /heartbeat mỗi ~60s (và mỗi /ingest thành công cũng
+# tính là "còn sống"). None = CHƯA TỪNG nhận từ lúc bot start — orchestrator dùng
+# để phân biệt "capture chết giữa chừng" (alert) vs "chủ đích tắt Tampermonkey" (im).
+_last_beat: float | None = None
 
 
 def pending_count() -> int:
     """Số post đang chờ trong hàng đợi."""
     return _inbox.qsize()
+
+
+def heartbeat_age() -> float | None:
+    """Giây kể từ heartbeat cuối; None nếu chưa từng nhận từ lúc bot start."""
+    if _last_beat is None:
+        return None
+    return time.time() - _last_beat
 
 
 def drain(max_items: int | None = None) -> list[dict[str, Any]]:
@@ -69,16 +81,26 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
-            self._reply(200, {"ok": True, "pending": pending_count()})
+            age = heartbeat_age()
+            self._reply(200, {
+                "ok": True,
+                "pending": pending_count(),
+                "heartbeat_age_s": round(age, 1) if age is not None else None,
+            })
         else:
             self._reply(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/ingest":
+        global _last_beat
+        if self.path not in ("/ingest", "/heartbeat"):
             self._reply(404, {"error": "not found"})
             return
         if _token and self.headers.get("X-Ingest-Token") != _token:
             self._reply(401, {"error": "bad token"})
+            return
+        if self.path == "/heartbeat":
+            _last_beat = time.time()
+            self._reply(200, {"ok": True})
             return
         try:
             length = int(self.headers.get("Content-Length", 0))
@@ -104,6 +126,7 @@ class _Handler(BaseHTTPRequestHandler):
             if isinstance(p, dict):
                 _inbox.put(p)
                 accepted += 1
+        _last_beat = time.time()  # ingest thành công = bằng chứng capture còn sống
         logger.debug(f"[fb_receiver] accepted {accepted} posts (pending={pending_count()})")
         self._reply(200, {"received": accepted, "pending": pending_count()})
 

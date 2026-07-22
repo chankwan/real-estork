@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RealEstork FB Group Capture
 // @namespace    realestork
-// @version      1.1.3
+// @version      1.2.0
 // @description  Passive capture post chính chủ từ group Facebook đóng → POST về bot localhost. Đọc THỤ ĐỘNG màn hình FB của 1 account thật (profile riêng), tự cuộn + xoay vòng group. KHÔNG tự đăng nhập, KHÔNG bơm traffic lạ.
 // @author       RealEstork
 // @match        https://www.facebook.com/groups/*
@@ -466,6 +466,24 @@
   groupEnteredAt = Date.now();
   capTimer = setInterval(tick, CONFIG.captureEveryMs);
   setTimeout(tick, 2500); // chờ feed render
+
+  // ── HEARTBEAT: báo "capture còn sống" về bot mỗi 60s (kể cả khi không có post
+  // mới). Bot im lặng >N phút không nhận được → Telegram nhắc mở lại cửa sổ.
+  // Interval RIÊNG, không bị doRotate/watchdog clear → chỉ chết khi tab/Chrome chết
+  // — chính là điều muốn phát hiện. Lỗi POST thì im (bot off = không ai nghe).
+  function sendHeartbeat() {
+    try {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: CONFIG.receiver.replace(/\/ingest$/, '/heartbeat'),
+        headers: { 'Content-Type': 'application/json', 'X-Ingest-Token': CONFIG.token },
+        data: JSON.stringify({ group: currentGroupId(), sent: captured }),
+        timeout: 5000,
+      });
+    } catch (e) {}
+  }
+  sendHeartbeat();
+  setInterval(sendHeartbeat, 60000);
 
   if (CONFIG.rotate) {
     const dwell = rnd(CONFIG.dwellMs[0], CONFIG.dwellMs[1]);

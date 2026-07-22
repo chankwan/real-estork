@@ -21,7 +21,8 @@ _(không có item chờ)_
 ### ~~Bot bị silent crash khi browser context die~~ ✅ Fixed session 16 (2026-05-26)
 - Xem `orchestrator/agent.py` → `start()` — `clean_exit` flag + `_atexit_cleanup` + `except Exception` crash handler.
 
-### Bot không tự dậy sau reboot nếu chưa login Windows (auto-start dùng `-AtLogon`)
+### ~~Bot không tự dậy sau reboot nếu chưa login Windows (auto-start dùng `-AtLogon`)~~ ✅ RESOLVED (2026-07-22)
+- **Cách giải quyết thực tế**: KHÔNG đổi trigger sang -AtStartup. Thay vào đó user đã bật **Windows auto sign-in** (verify: registry `AutoAdminLogon=1`, DefaultUserName="Chankwan PC 2") + **BIOS auto power-on sau mất điện**. Chuỗi giờ: có điện lại → máy tự bật → tự đăng nhập → 2 task -AtLogon tự chạy (bot + Chrome capture). Nội dung cũ giữ dưới đây làm bối cảnh sự cố 37h.
 - **Operator thấy gì**: Bot "im" rất lâu sau khi máy tự tắt/reset — không alert, không scrape — dù self-healing lock vẫn OK khi cuối cùng dậy lại.
 - **Sự cố thật (24–26/06/2026)**: Máy mất điện/reset cứng ~23:55 ngày 24/06 (bot log cắt giữa dòng; Windows Event 6008 "unexpected shutdown" + Event 41 Kernel-Power "rebooted without cleanly shutting down"). Máy tắt hẳn **~37 giờ** (không event log nào 24/06 23:55 → 26/06 12:39), boot lại 26/06 12:39 → bot mới auto-start 12:40. **KHÔNG phải lỗi code** — code chạy đúng tới lúc mất điện, và self-healing lock phục hồi sạch khi dậy.
 - **Nguyên nhân gốc của 37h downtime**: Task Scheduler "RealEstork Bot" dùng trigger **`-AtLogon`** → chỉ chạy khi có người **đăng nhập** Windows. Máy reboot lúc logout → bot nằm chờ tới lần login kế.
@@ -49,8 +50,9 @@ _(không có item chờ)_
 - **Bối cảnh (session 2026-07-07)**: Đã fix throttling (cờ Chrome trong `bot-fb-scan.bat` — minimize/che cửa sổ vẫn scan). Nhưng nếu **PC2 ngủ (Sleep)** hoặc **Chrome Memory Saver freeze tab** khi idle lâu → cả capture lẫn bot đứng. Nghi phạm còn lại cho các khoảng im dài.
 - **Cần làm** (thao tác tay, không code): Power → Sleep → **Never** (ít nhất khi cắm điện); `chrome://settings/performance` → tắt **Memory Saver** (hoặc thêm facebook.com vào "always keep active").
 
-### Gắn `bot-fb-scan.bat` vào Task Scheduler -AtLogon (Mức 2 auto-start capture)
-- Sau khi xác nhận cờ + virtual desktop/minimize chạy ổn định vài ngày: mirror `bot-start-headless` → capture Chrome tự bật khi đăng nhập Windows, khỏi double-click tay.
+### ~~Gắn `bot-fb-scan.bat` vào Task Scheduler -AtLogon (Mức 2 auto-start capture)~~ ✅ XONG (2026-07-22)
+- Task "RealEstork FB Scan" (-AtLogon, delay 45s) chạy `bot-fb-scan.bat /auto`. Chế độ `/auto`: không pause + tự kill Chrome capture còn sót (kể cả process nền Startup Boost giữ singleton nuốt cờ launch). Thêm cờ `--hide-crash-restore-bubble` (không treo popup "Restore pages?" sau crash). Detector Chrome capture đổi sang match ExecutablePath (fix miss process không args).
+- **Lưu ý vận hành**: capture tự bật lại sau MỌI lần logon → muốn tạm ngưng FB thật sự phải TẮT extension Tampermonkey trong Chrome (đóng cửa sổ là chưa đủ), hoặc Disable task "RealEstork FB Scan".
 
 ### Chống flood thông báo Telegram FB (theo topic) — đang nghiên cứu
 - **Vấn đề (2026-07-08)**: Alert FB ping ngập máy vợ + đồng nghiệp → user tạm tắt FB (switch-off Tampermonkey).
@@ -60,9 +62,9 @@ _(không có item chờ)_
 - **Cần chốt trước khi làm**: vợ có muốn còn ping realtime cho tin Chủ giá trị không → quyết Tầng 1 vs Tầng 2 vs biến thể.
 - **Chỗ sửa nếu chọn Tầng 2**: `notifications/telegram.py` → `send_listing_alert` (thêm `disable_notification` theo source == facebook_groups).
 
-### Watchdog Mức 3: heartbeat capture (phát hiện capture chết)
-- **Điểm mù hiện tại**: Bot không biết capture FB đã chết hay chỉ hết tin (receiver 0 post = mơ hồ). 
-- **Đề xuất**: bot theo dõi thời gian từ post FB cuối cùng; im quá X phút (giờ hoạt động) → Telegram cảnh báo "capture FB có thể đã dừng".
+### ~~Watchdog Mức 3: heartbeat capture (phát hiện capture chết)~~ ✅ XONG (2026-07-22)
+- Userscript v1.2.0 ping `/heartbeat` mỗi 60s (POST thành công vào `/ingest` cũng tính là sống). Bot check mỗi FB cycle (3 phút): đã TỪNG nhận heartbeat mà im >15 phút (`heartbeat_alert_minutes` trong spiders.yaml) → Telegram admin nhắc mở lại capture, 1 lần/đợt + báo khi hồi phục. CHƯA TỪNG nhận từ lúc bot start → im lặng (chủ đích tắt extension thì không nag).
+- **Còn lại (thủ công)**: paste userscript v1.2.0 vào Tampermonkey trên Chrome capture (bản cũ 1.1.3 không có heartbeat — bot vẫn coi "sống" qua ingest, nhưng hết tin mới ≠ chết sẽ lại mơ hồ cho tới khi update).
 
 ---
 

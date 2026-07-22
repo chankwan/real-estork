@@ -115,6 +115,9 @@ class RealEstorkAgent:
         self.telegram = TelegramNotifier()
         self.muaban_auth = MuabanAuthClient()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Ho_Chi_Minh")
+        # FB capture heartbeat: True = đang trong "đợt im lặng" đã báo Telegram
+        # (chỉ báo 1 lần/đợt; hồi phục thì báo lại + reset).
+        self._fb_capture_silent = False
         # Spiders can run concurrently using ThreadPoolExecutor and scrapling StealthyFetcher.
 
         # Load schedule config
@@ -616,6 +619,8 @@ class RealEstorkAgent:
         if spider is None:
             return  # spider disabled → silent no-op (không log spam mỗi 3 phút)
 
+        await self._check_fb_capture_heartbeat(spider)
+
         spider.seen_ids = set(self.dedup.seen_source_ids)
 
         try:
@@ -682,6 +687,40 @@ class RealEstorkAgent:
                 status="failed",
                 error_message=str(e),
             )
+
+    async def _check_fb_capture_heartbeat(self, spider) -> None:
+        """
+        Giám sát cửa sổ Chrome capture qua heartbeat (userscript ping /heartbeat 60s).
+        - Chưa từng nhận từ lúc bot start → im lặng (anh chủ đích tắt Tampermonkey).
+        - Đã từng nhận mà im >N phút → Telegram admin 1 lần/đợt (kèm cách khắc phục).
+        - Nhận lại sau khi đã báo → báo hồi phục + reset để đợt sau báo tiếp được.
+        """
+        try:
+            from ingest.fb_receiver import heartbeat_age
+
+            age = heartbeat_age()
+            if age is None:
+                return  # chưa từng có heartbeat — extension đang tắt chủ đích
+            threshold_s = float(spider.config.get("heartbeat_alert_minutes", 15)) * 60
+            if age > threshold_s and not self._fb_capture_silent:
+                self._fb_capture_silent = True
+                logger.warning(
+                    f"[orchestrator] FB capture im lặng {age / 60:.0f} phút "
+                    f"(ngưỡng {threshold_s / 60:.0f}) → Telegram admin"
+                )
+                await self.telegram.send_admin(
+                    f"⚠️ <b>FB capture im lặng {age / 60:.0f} phút</b>\n"
+                    f"Cửa sổ Chrome capture có thể đã đóng/crash, hoặc via bị FB logout.\n"
+                    f"→ Khắc phục: double-click <code>bot-fb-scan.bat</code> trên PC2 "
+                    f"(hoặc chờ reboot — Task Scheduler tự mở lại).\n"
+                    f"→ Nếu via bị logout: mở Chrome profile Default, login lại FB."
+                )
+            elif age <= threshold_s and self._fb_capture_silent:
+                self._fb_capture_silent = False
+                logger.info("[orchestrator] FB capture heartbeat hồi phục")
+                await self.telegram.send_admin("✅ <b>FB capture hoạt động lại</b> — heartbeat đã nhận lại bình thường.")
+        except Exception as e:
+            logger.error(f"[orchestrator] heartbeat check lỗi: {type(e).__name__}: {e}")
 
     async def _check_muaban_token(self) -> None:
         """If muaban token expired, try headless refresh via saved profile."""

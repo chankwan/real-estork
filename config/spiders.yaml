@@ -81,6 +81,10 @@ spiders:
     ingest_host: "127.0.0.1"
     ingest_port: 8787
     ingest_token: "CHANGE_ME_realestork_fb"
+    # Heartbeat monitor: userscript ping mỗi 60s. Đã TỪNG nhận heartbeat mà im lặng
+    # quá N phút → Telegram admin nhắc mở lại cửa sổ Chrome capture (1 lần/đợt +
+    # báo khi hồi phục). CHƯA TỪNG nhận từ lúc bot start → im (chủ đích tắt extension).
+    heartbeat_alert_minutes: 15
     # 9 group đóng — userscript xoay vòng qua các URL này (điền group thật trước go-live)
     groups:
       - "https://www.facebook.com/groups/REPLACE_GROUP_1"

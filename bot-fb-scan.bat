@@ -23,33 +23,51 @@ REM ============================================================================
 
 setlocal
 
+REM /auto = chay tu Task Scheduler (at logon): KHONG pause (khong co nguoi bam phim).
+set "AUTOMODE=0"
+if /i "%~1"=="/auto" set "AUTOMODE=1"
+
 set "CHROME=C:\Program Files\Google\Chrome\Application\chrome.exe"
 set "PROFILE=Default"
 REM Group dau tien trong danh sach userscript; kem sort chronological (bai moi len dau).
 set "URL=https://www.facebook.com/groups/239359157957166?sorting_setting=CHRONOLOGICAL"
-set "FLAGS=--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding"
+REM --hide-crash-restore-bubble: sau cup dien/crash, Chrome KHONG treo popup
+REM "Restore pages?" (popup nay che viec load trang => userscript khong chay).
+set "FLAGS=--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --hide-crash-restore-bubble"
 
 if not exist "%CHROME%" (
   echo [LOI] Khong tim thay Chrome tai: %CHROME%
   echo       Sua bien CHROME trong file .bat cho dung.
-  pause
+  if "%AUTOMODE%"=="0" pause
   exit /b 1
 )
 
-REM --- Chi canh bao khi CUM CAPTURE (Google Chrome that, profile Default) dang mo.
-REM     Bo qua "Google Chrome for Testing" = browser Playwright cua bot scan portal
-REM     (chay tu ...\ms-playwright\..., user-data-dir rieng) =^> KHONG chan co, KHONG dong.
+REM --- Phat hien CUM CAPTURE dang chay: match theo DUONG DAN EXE (Program Files),
+REM     khong theo command line — vi Chrome Startup Boost / background mode de lai
+REM     process chrome.exe KHONG args (command line trong) van giu singleton =>
+REM     co launch bi nuot. "Chrome for Testing" (Playwright, ...\ms-playwright\...)
+REM     co ExecutablePath khac =^> khong dinh, KHONG duoc dong.
 set "CAPRUN=0"
-for /f "usebackq delims=" %%C in (`powershell -NoProfile -Command "@(Get-CimInstance Win32_Process).Where({ $_.Name -eq 'chrome.exe' -and $_.CommandLine -match 'Chrome\\User Data' -and $_.CommandLine -notmatch 'playwright' -and $_.CommandLine -notmatch 'for Testing' -and $_.CommandLine -notmatch '--type=' }).Count"`) do set "CAPRUN=%%C"
+for /f "usebackq delims=" %%C in (`powershell -NoProfile -Command "@(Get-CimInstance Win32_Process).Where({ $_.Name -eq 'chrome.exe' -and $_.ExecutablePath -eq '%CHROME%' }).Count"`) do set "CAPRUN=%%C"
 
 if not "%CAPRUN%"=="0" (
-  echo.
-  echo   [CANH BAO] Chrome CAPTURE ^(Google Chrome, profile Default^) DANG mo
-  echo              =^> 3 co chong throttling se BI BO QUA.
-  echo              Dong HET cua so "Google Chrome" thuong ^(nut X^) roi chay lai .bat nay.
-  echo              LUU Y: "Google Chrome for Testing" = bot scan portal, KHONG duoc dong.
-  echo.
-  pause
+  if "%AUTOMODE%"=="1" (
+    REM /auto chay luc vua logon — chua ai duyet web. Dong het Chrome capture con
+    REM sot (ke ca process nen Startup Boost) de co launch duoc ap dung that.
+    echo [AUTO] Chrome capture dang chay ^(%CAPRUN% process^) - dong de ap dung co...
+    powershell -NoProfile -Command "@(Get-CimInstance Win32_Process).Where({ $_.Name -eq 'chrome.exe' -and $_.ExecutablePath -eq '%CHROME%' }) | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }"
+    timeout /t 3 /nobreak >nul
+  ) else (
+    echo.
+    echo   [CANH BAO] Chrome CAPTURE ^(Google Chrome that^) DANG chay - %CAPRUN% process
+    echo              =^> 3 co chong throttling se BI BO QUA.
+    echo              Dong HET cua so "Google Chrome" thuong ^(nut X^) roi chay lai .bat nay.
+    echo              Neu khong thay cua so nao: Chrome dang chay NEN ^(Startup Boost^)
+    echo              =^> mo Task Manager, End task cac "Google Chrome" ^(khong dong
+    echo              "Google Chrome for Testing" = bot scan portal^).
+    echo.
+    pause
+  )
 ) else (
   echo Cum Capture chua mo - an toan. ^("Chrome for Testing" cua bot van chay binh thuong.^)
 )
