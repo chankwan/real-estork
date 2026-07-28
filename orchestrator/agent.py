@@ -916,35 +916,61 @@ class RealEstorkAgent:
                 f"Đang khởi động lại..."
             )
 
-        try:
-            self.db.health_check_write()
-            logger.info("[orchestrator] ✅ DB smoke test passed (write OK)")
-        except Exception as e:
-            err_msg = str(e)
-            logger.error(
-                f"[orchestrator] ❌ DB smoke test FAILED — không thể write vào Supabase. "
-                f"{type(e).__name__}: {err_msg}"
-            )
-            is_rls = "row-level security" in err_msg.lower() or "42501" in err_msg
-            hint = (
-                "RLS chặn write — kiểm tra <code>SUPABASE_SERVICE_KEY</code> "
-                "(phải là <code>sb_secret_*</code> hoặc JWT <code>eyJ...</code>, "
-                "KHÔNG phải <code>sb_publishable_*</code>). Chạy: <code>bot doctor</code>."
-                if is_rls else
-                "Kết nối Supabase fail — kiểm tra <code>SUPABASE_URL</code> + "
-                "<code>SUPABASE_SERVICE_KEY</code> trong .env. Chạy: <code>bot doctor</code>."
-            )
+        # Lỗi mạng/DNS (vd cúp điện vừa có lại, router/ISP chưa kịp reconnect lúc
+        # máy auto-logon) là TẠM THỜI — retry vô hạn mỗi 30s cho tới khi có mạng,
+        # vì Task Scheduler -AtLogon KHÔNG tự retry khi task fail (đã verify thực
+        # nghiệm: RestartCount/RestartInterval không kích hoạt cho trigger loại này).
+        # Lỗi khác (RLS, sai key...) là lỗi config thật — retry vô ích, fail ngay + alert.
+        _NETWORK_ERROR_MARKERS = (
+            "getaddrinfo failed",
+            "connecterror",
+            "connecttimeout",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "network is unreachable",
+        )
+        attempt = 0
+        while True:
             try:
-                await self.telegram.send_lifecycle(
-                    f"🚨 <b>RealEstork Bot — KHỞI ĐỘNG THẤT BẠI</b>\n"
-                    f"DB smoke test fail.\n"
-                    f"Lỗi: <code>{type(e).__name__}: {err_msg[:200]}</code>\n"
-                    f"→ {hint}"
+                self.db.health_check_write()
+                logger.info("[orchestrator] ✅ DB smoke test passed (write OK)")
+                break
+            except Exception as e:
+                err_msg = str(e)
+                is_network = any(m in err_msg.lower() for m in _NETWORK_ERROR_MARKERS)
+                if is_network:
+                    attempt += 1
+                    logger.warning(
+                        f"[orchestrator] Chưa có mạng/DNS (lần thử {attempt}): "
+                        f"{type(e).__name__}: {err_msg}. Thử lại sau 30s..."
+                    )
+                    await asyncio.sleep(30)
+                    continue
+
+                logger.error(
+                    f"[orchestrator] ❌ DB smoke test FAILED — không thể write vào Supabase. "
+                    f"{type(e).__name__}: {err_msg}"
                 )
-            except Exception as tg_err:
-                logger.error(f"[orchestrator] Telegram alert cũng fail: {tg_err}")
-            clean_exit = True  # controlled abort, not crash — lock should be cleaned
-            sys.exit(1)
+                is_rls = "row-level security" in err_msg.lower() or "42501" in err_msg
+                hint = (
+                    "RLS chặn write — kiểm tra <code>SUPABASE_SERVICE_KEY</code> "
+                    "(phải là <code>sb_secret_*</code> hoặc JWT <code>eyJ...</code>, "
+                    "KHÔNG phải <code>sb_publishable_*</code>). Chạy: <code>bot doctor</code>."
+                    if is_rls else
+                    "Kết nối Supabase fail — kiểm tra <code>SUPABASE_URL</code> + "
+                    "<code>SUPABASE_SERVICE_KEY</code> trong .env. Chạy: <code>bot doctor</code>."
+                )
+                try:
+                    await self.telegram.send_lifecycle(
+                        f"🚨 <b>RealEstork Bot — KHỞI ĐỘNG THẤT BẠI</b>\n"
+                        f"DB smoke test fail.\n"
+                        f"Lỗi: <code>{type(e).__name__}: {err_msg[:200]}</code>\n"
+                        f"→ {hint}"
+                    )
+                except Exception as tg_err:
+                    logger.error(f"[orchestrator] Telegram alert cũng fail: {tg_err}")
+                clean_exit = True  # controlled abort, not crash — lock should be cleaned
+                sys.exit(1)
 
         # Start Facebook ingest receiver (localhost) if the spider is enabled.
         fb_spider = self.spider_engine.get_spider("facebook_groups")
