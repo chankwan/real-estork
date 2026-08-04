@@ -15,6 +15,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
@@ -921,6 +922,14 @@ class RealEstorkAgent:
         # vì Task Scheduler -AtLogon KHÔNG tự retry khi task fail (đã verify thực
         # nghiệm: RestartCount/RestartInterval không kích hoạt cho trigger loại này).
         # Lỗi khác (RLS, sai key...) là lỗi config thật — retry vô ích, fail ngay + alert.
+        #
+        # Nhận diện bằng EXCEPTION TYPE (httpx.TransportError — cha chung của
+        # ConnectError/ConnectTimeout/ReadTimeout/PoolTimeout/NetworkError...), KHÔNG
+        # phải match chuỗi message: session trước match message ("getaddrinfo failed")
+        # nên bị sự cố mạng KHÁC (ConnectTimeout, message "[WinError 10060] ...") lọt
+        # qua — message lỗi socket phụ thuộc OS/locale, không ổn định để match. Type
+        # exception thì ổn định vì httpx luôn raise TransportError cho mọi lỗi tầng
+        # kết nối, bất kể message cụ thể là gì. Giữ string marker làm fallback phụ.
         _NETWORK_ERROR_MARKERS = (
             "getaddrinfo failed",
             "connecterror",
@@ -928,6 +937,8 @@ class RealEstorkAgent:
             "name or service not known",
             "temporary failure in name resolution",
             "network is unreachable",
+            "winerror 10060",
+            "winerror 10061",
         )
         attempt = 0
         while True:
@@ -937,7 +948,9 @@ class RealEstorkAgent:
                 break
             except Exception as e:
                 err_msg = str(e)
-                is_network = any(m in err_msg.lower() for m in _NETWORK_ERROR_MARKERS)
+                is_network = isinstance(e, httpx.TransportError) or any(
+                    m in err_msg.lower() for m in _NETWORK_ERROR_MARKERS
+                )
                 if is_network:
                     attempt += 1
                     logger.warning(
