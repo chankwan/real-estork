@@ -290,3 +290,91 @@ class TestDistrictNormalization:
         assert norm("TP. Thủ Đức") == "thu duc"
         # Regression: city names with no district prefix stay intact
         assert norm("Thành phố Hà Nội") == "ha noi"
+
+# =====================================================
+# Batdongsan — xác minh số tin đăng của người bán
+# (audit 2026-08-18: môi giới 101/709 tin lọt alert)
+# =====================================================
+
+class _StubPage:
+    """Trang giả cho _enrich_from_detail: chỉ cần html_content + css() rỗng."""
+
+    def __init__(self, html: str) -> None:
+        self.html_content = html
+
+    def css(self, selector: str):
+        return []
+
+
+class TestBatdongsanPosterCount:
+    """Đọc số tin đăng từ trang chi tiết — không đọc được thì phải là 'chưa biết'."""
+
+    def _enrich(self, html: str):
+        import asyncio
+        from spiders.batdongsan import BatdongsanSpider
+
+        spider = BatdongsanSpider({"name": "batdongsan", "urls": ["https://x"]})
+
+        async def fake_fetch(url, loop, wait=3000):
+            return _StubPage(html)
+
+        spider._stealth_fetch = fake_fetch
+        listing = make_listing(source="batdongsan", source_url="https://x/pr1")
+        asyncio.run(spider._enrich_from_detail(listing, None))
+        return listing.poster_total_listings
+
+    def test_sidebar_count(self):
+        assert self._enrich("<p>Tin đăng đang có</p><p>32</p>") == 32
+
+    def test_xem_them_button(self):
+        # "Xem thêm 101 tin khác" = 101 tin khác + chính tin này
+        assert self._enrich("<div>Xem thêm 101 tin khác</div>") == 102
+
+    def test_khong_thay_so_thi_chua_biet(self):
+        """Regression: trước đây mặc định 1 → +25 điểm chính chủ cho môi giới."""
+        assert self._enrich("<div>trang chi tiết không có khối liên hệ</div>") is None
+
+    def test_cloudflare_chan_thi_sentinel(self):
+        assert self._enrich("<title>Just a moment...</title>") == -1
+
+
+class TestBdsPosterCountUnknown:
+    """Hàng rào thứ hai: chưa biết số tin đăng → không được coi là chính chủ."""
+
+    def _l(self, count, source="batdongsan"):
+        listing = make_listing(source=source, source_id="1")
+        listing.poster_total_listings = count
+        return listing
+
+    def test_none_la_chua_biet(self):
+        from orchestrator.agent import _bds_poster_count_unknown
+        assert _bds_poster_count_unknown(self._l(None)) is True
+
+    def test_sentinel_am_la_chua_biet(self):
+        from orchestrator.agent import _bds_poster_count_unknown
+        assert _bds_poster_count_unknown(self._l(-1)) is True
+
+    def test_co_so_that_thi_di_tiep(self):
+        from orchestrator.agent import _bds_poster_count_unknown
+        assert _bds_poster_count_unknown(self._l(1)) is False
+        assert _bds_poster_count_unknown(self._l(7)) is False
+
+    def test_source_khac_khong_dinh_gate(self):
+        from orchestrator.agent import _bds_poster_count_unknown
+        assert _bds_poster_count_unknown(self._l(None, source="nhatot")) is False
+
+    def test_replay_5_tin_bi_lot_trong_audit(self):
+        """5 tin vợ báo — dùng đúng giá trị active đã ghi trong log production."""
+        from orchestrator.agent import _bds_poster_count_unknown
+
+        leaked = {
+            "44549267": -1,   # showroom Q2, score 76
+            "46211967": -1,   # Nguyễn Thị Minh Khai, score 76
+            "45755898": None, # Lê Duẩn, score 100 (log ghi 1 = mặc định cũ)
+            "46162437": None, # villa Nguyễn Văn Hưởng, score 96
+            "45959419": None, # duplex Q7, score 86
+        }
+        for source_id, active in leaked.items():
+            listing = self._l(active)
+            listing.source_id = source_id
+            assert _bds_poster_count_unknown(listing) is True, source_id

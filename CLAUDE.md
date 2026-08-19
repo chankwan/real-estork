@@ -66,6 +66,26 @@ python -m cli.main classify <id>      # debug scoring for a listing
 ```
 
 ## Changelog
+### 2026-08-19 (session 22) — Audit tin môi giới lọt alert + Cloudflare chặn BDS + chuông đói tin
+- **Trigger**: Vợ/user báo 5 tin batdongsan là môi giới (profile 101-709 tin đăng) nhưng bot alert "Likely Chính Chủ" score 76-100.
+- **Root cause audit (3 lỗ, cùng gốc "thiếu dữ liệu = được coi là chính chủ")**:
+  1. Fetch detail hỏng (Cloudflare) → `poster_total_listings=-1` → lọt qua veto (>5) + không signal nào fire + được thưởng `description_too_short`/`photo_count_low` từ trang rỗng → 76 điểm.
+  2. Detail đọc được nhưng nút "Xem thêm N tin khác" (JS render) không kịp → fallback mặc định **1** → `bds_owner_few +15` + `bds_owner_single +10` = +25 điểm cho dữ liệu KHÔNG có → 86-100 điểm. Regex chính `"Tin đăng đang có"` chưa bao giờ match trên trang detail (chuỗi đó chỉ có ở trang guru).
+  3. `enrich_from_profile` (trang guru) là code chết — orchestrator gọi `_process_listing` không truyền spider.
+- **Sự cố thứ 2 phát hiện trong lúc audit**: BDS nâng Cloudflare lên cả trang list + detail theo lộ trình 11/08 (thăm dò, ~10 marker/ngày) → 17-18/08 (chặn hẳn, 359 marker/ngày). 63 cycle liên tiếp fetch 0 tin **không ai được báo** — bot coi "0 tin" là bình thường. Nguyên nhân kỹ thuật: mỗi trang mở 1 browser mới → fingerprint mới → cf_clearance vô dụng, và fetch thường không biết giải challenge.
+- **Fix A+C (chặn lỗ classify)**:
+  - `spiders/batdongsan.py`: bỏ fallback mặc định 1 → `None` = chưa biết.
+  - `orchestrator/agent.py`: helper `_bds_poster_count_unknown` (None hoặc <0) → tin bị **hoãn** (`chua_xac_minh_nguoi_ban`), vào `_bds_pending`, thử đọc lại tối đa `_BDS_MAX_VERIFY_ATTEMPTS=3` lượt; hết lượt → lưu DB `status=unverified_poster` score 0, KHÔNG alert.
+- **Fix fetch (session + solve_cloudflare)** — `spiders/batdongsan.py`:
+  - `fetch_listings` chuyển từ "1 browser/trang qua StealthyFetcher + executor" sang **1 `AsyncStealthySession`/cycle** với `solve_cloudflare=True`, `max_pages=detail_concurrency` (tab pool), `timeout=180s`. Giải challenge 1 lần (~2-3 phút) → mọi trang sau đi bằng cf_clearance (~7-12s/trang). Verify live 2026-08-19 (lúc BDS đang chặn thật): 2 list page + 3 detail đều 200, đọc số tin đăng 3/3 — trong đó "Ms Thư" active=712 (đúng môi giới trong audit) → giờ bị veto ngay.
+  - Tin hoãn được orchestrator nạp vào `spider.pending_retry` TRƯỚC `spider.run()` → enrich lại trong CÙNG session (không tốn lượt solve riêng).
+- **Chuông đói tin + health (option B+D)**:
+  - Spider đếm `cycle_health` (list ok/cf/no-cards, detail ok/cf/unreadable) tại đúng các điểm phát hiện lỗi.
+  - Orchestrator: `_check_bds_starvation` — `_BDS_STARVE_CYCLES=6` cycle liên tiếp không đọc được trang list nào (~2h) → Telegram admin 1 lần/đợt kèm chẩn đoán (CF cao = nâng chặn / mất-card = đổi UI), báo khi hồi phục. Cùng pattern heartbeat FB.
+  - Daily digest 8h sáng thêm section "🕷 Batdongsan 24h": số cycle, cycle trắng, health line — bắt xu hướng siết dần kiểu 11→14/08.
+- **Verify**: 10 unit test mới (regression replay đúng 5 tin bị lọt với giá trị active từ log production) + 5 kịch bản flow (stage→run→resolve, requeue khi cycle chết, chuông kêu đúng ngưỡng 6 + hồi phục, dưới ngưỡng im lặng, day-health tích luỹ) — tất cả PASS. Suite 41/42 pass (1 fail pre-existing session 14: `test_known_broker_phone_crushes_score`). Live test spider thật 2 lần đối đầu CF đang chặn → đều qua.
+- **Trade-off đã báo user**: ~68% tin BDS trước đây thuộc diện "chưa biết số tin đăng" sẽ bị hoãn/không alert → alert BDS giảm rõ, đa số là tin đáng lẽ không nên gửi; chủ thật bị trễ tối đa ~40 phút. Cuộc rượt đuổi Cloudflare chưa kết thúc — chuông đói tin là lưới an toàn khi BDS nâng chặn tiếp.
+- **Backlog mới ghi nhận**: signal `account_new_or_few_posts` crash khi `poster_total_listings=None` (lộ qua test, chỉ ảnh hưởng nhatot, bị catch bởi classifier). Hàng chờ duyệt tay qua Telegram (đề xuất 4 của user) — lùi tới khi đo được tỉ lệ bỏ-cuộc thật sau fix fetch.
 ### 2026-08-04 (session 21) — Fix session 20: retry loop bỏ sót lỗi mạng khác wording (message-match → type-match)
 - **Trigger**: PC2 cúp điện thật lần 2 (2026-08-03 tối) → bot khởi động lại báo lỗi, KHÔNG tự phục hồi — đúng loại sự cố session 20 tưởng đã fix.
 - **Root cause**: fix session 20 nhận diện "lỗi mạng" bằng cách match chuỗi message (`"getaddrinfo failed"`, `"connecterror"`...) — chỉ khớp đúng wording của sự cố lần 1 (`httpx.ConnectError: [Errno 11001] getaddrinfo failed`). Sự cố lần 2 là **loại lỗi mạng khác** (`httpx.ConnectTimeout: [WinError 10060] A connection attempt failed...`) — message hoàn toàn khác, không chứa marker nào → bị phân loại nhầm thành "lỗi config thật" → fail nhanh + thoát thay vì retry. Bug tái diễn y hệt session 20, chỉ khác wording lỗi gốc.

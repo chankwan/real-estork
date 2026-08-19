@@ -102,49 +102,86 @@ class BatdongsanSpider(BaseSpider):
         self.start_url = self.start_urls[0]
         self.detail_concurrency: int = int(config.get("detail_concurrency", 4))
         self.dedup_stop_ratio: float = float(config.get("dedup_stop_ratio", 0.7))
-        # Hold reference to StealthyFetcher.fetch — lazily imported in fetch_listings
-        self._fetch_impl: Any = None
+        # Session browser dùng chung cho cả cycle (set trong fetch_listings).
+        # 1 browser/cycle thay vì 1 browser/trang: cf_clearance của Cloudflare gắn
+        # với fingerprint browser — đổi browser mỗi trang là phải giải challenge lại
+        # (nguyên nhân bot mù batdongsan 15-18/08 khi BDS nâng mức chặn).
+        self._session: Any = None
+        # Tin cycle trước chưa đọc được số tin đăng — orchestrator nạp vào đây để
+        # enrich lại trong CÙNG session (không tốn lượt giải Cloudflare riêng).
+        self.pending_retry: list[RawListing] = []
+        # Health counters per cycle — orchestrator đọc để phát hiện BDS đổi chặn/UI.
+        self.cycle_health: dict[str, int] = {}
 
     # ────────────────────────── ORCHESTRATION ──────────────────────────
 
     async def fetch_listings(self) -> list[RawListing]:
         try:
-            from scrapling import StealthyFetcher
+            from scrapling.fetchers import AsyncStealthySession
         except ImportError as e:
             logger.error(
-                f"[batdongsan] StealthyFetcher import failed ({type(e).__name__}: {e}). "
+                f"[batdongsan] AsyncStealthySession import failed ({type(e).__name__}: {e}). "
                 "Fix: pip install -r requirements.txt && "
                 "venv/Scripts/scrapling.exe install"
             )
             return []
 
-        self._fetch_impl = StealthyFetcher.fetch
         loop = asyncio.get_running_loop()
+        self.cycle_health = {
+            "list_pages_ok": 0, "list_cf_blocked": 0, "list_no_cards": 0,
+            "detail_ok": 0, "detail_cf": 0, "detail_unreadable": 0,
+        }
 
         all_listings: list[RawListing] = []
         pro_agent_listings: list[RawListing] = []
 
-        for start_url in self.start_urls:
-            listings, pro_agents = await self._fetch_pages_from(start_url, loop)
-            all_listings.extend(listings)
-            pro_agent_listings.extend(pro_agents)
-            if len(self.start_urls) > 1:
-                await asyncio.sleep(self.request_delay)
+        # 1 session (1 browser) cho toàn cycle: solve_cloudflare giải challenge ở
+        # fetch đầu (~1-2 phút), các fetch sau đi qua bằng cf_clearance đã có
+        # (~5-15s/trang — verify 2026-08-19: 139s trang đầu, 7-12s các trang sau).
+        # max_pages = tab pool cho enrich detail chạy song song.
+        # timeout 180s: đủ cho lượt giải challenge đầu tiên.
+        session = AsyncStealthySession(
+            headless=True,
+            solve_cloudflare=True,
+            max_pages=self.detail_concurrency,
+            timeout=180_000,
+        )
+        try:
+            await session.__aenter__()
+            self._session = session
 
-        # ── Detail enrichment (parallel across all URLs) ───────────────
-        logger.info(f"[batdongsan] Enriching {len(all_listings)} details (concurrency={self.detail_concurrency})")
-        sem = asyncio.Semaphore(self.detail_concurrency)
+            for start_url in self.start_urls:
+                listings, pro_agents = await self._fetch_pages_from(start_url, loop)
+                all_listings.extend(listings)
+                pro_agent_listings.extend(pro_agents)
+                if len(self.start_urls) > 1:
+                    await asyncio.sleep(self.request_delay)
 
-        async def _enrich(l: RawListing) -> None:
-            async with sem:
-                try:
-                    import random
-                    await asyncio.sleep(random.uniform(1.0, 3.0))
-                    await self._enrich_from_detail(l, loop)
-                except Exception as e:
-                    logger.warning(f"[batdongsan] detail enrich failed for {l.source_id}: {e}")
+            # ── Detail enrichment (parallel across all URLs) ───────────────
+            logger.info(f"[batdongsan] Enriching {len(all_listings)} details (concurrency={self.detail_concurrency})")
+            sem = asyncio.Semaphore(self.detail_concurrency)
 
-        await asyncio.gather(*(_enrich(l) for l in all_listings))
+            async def _enrich(l: RawListing) -> None:
+                async with sem:
+                    try:
+                        import random
+                        await asyncio.sleep(random.uniform(1.0, 3.0))
+                        await self._enrich_from_detail(l, loop)
+                    except Exception as e:
+                        logger.warning(f"[batdongsan] detail enrich failed for {l.source_id}: {e}")
+
+            await asyncio.gather(*(_enrich(l) for l in all_listings))
+
+            # ── Đọc lại tin hoãn từ cycle trước (cùng session, không tốn solve) ──
+            if self.pending_retry:
+                logger.info(f"[batdongsan] Đọc lại {len(self.pending_retry)} tin hoãn trong cùng session")
+                await asyncio.gather(*(_enrich(l) for l in self.pending_retry))
+        finally:
+            self._session = None
+            try:
+                await session.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"[batdongsan] session close error: {type(e).__name__}: {e}")
 
         # ── Post-process: same-session count ──────────────────────────
         name_counts: Counter = Counter(l.contact_name for l in all_listings if l.contact_name)
@@ -196,6 +233,7 @@ class BatdongsanSpider(BaseSpider):
             html = page.html_content or ""
             if "Checking your browser" in html or "Just a moment" in html:
                 logger.warning("[batdongsan] Cloudflare challenge không bypass được")
+                self.cycle_health["list_cf_blocked"] = self.cycle_health.get("list_cf_blocked", 0) + 1
                 break
 
             # Target full-web cards (tin thường vs compact VIP)
@@ -206,7 +244,11 @@ class BatdongsanSpider(BaseSpider):
                     "— selector có thể đã thay đổi"
                 )
                 logger.debug(f"[batdongsan] HTML snippet: {html[:500]}")
+                self.cycle_health["list_no_cards"] = self.cycle_health.get("list_no_cards", 0) + 1
                 break
+
+            # Trang đọc được + có card → tính là healthy (chuông đói tin dựa vào đây)
+            self.cycle_health["list_pages_ok"] = self.cycle_health.get("list_pages_ok", 0) + 1
 
             page_parsed: list[RawListing] = []
             page_non_today = 0
@@ -431,6 +473,7 @@ class BatdongsanSpider(BaseSpider):
             # All retries failed
             logger.error(f"[batdongsan] Detail enrichment failed for {listing.source_id} due to Cloudflare")
             listing.poster_total_listings = -1 # Sentinel for "failed to enrich"
+            self.cycle_health["detail_cf"] = self.cycle_health.get("detail_cf", 0) + 1
             return
 
         # Phone: BDS không embed số điện thoại trong HTML — chỉ có encrypted `raw`
@@ -474,13 +517,22 @@ class BatdongsanSpider(BaseSpider):
 
         # Active listing count — try sidebar "Tin đăng đang có X" first (reliable,
         # rendered in static HTML contact card). Fall back to "Xem thêm X tin khác"
-        # button (JS-rendered, may be absent). Default 1 = only this listing.
+        # button (JS-rendered, may be absent).
+        #
+        # KHÔNG mặc định 1 khi cả hai đều trượt: "1 tin đăng" là bằng chứng chính chủ
+        # mạnh nhất của BDS (bds_owner_few +15 stack bds_owner_single +10 = +25), nên
+        # đoán 1 lúc không đọc được = thưởng 25 điểm cho dữ liệu KHÔNG có. Audit
+        # 2026-08-18: môi giới 101 và 709 tin lọt alert đúng vì đường này (nút "Xem
+        # thêm N tin khác" do JS render, lúc kịp lúc không). None = chưa biết →
+        # orchestrator hoãn tin lại và thử đọc lại ở cycle sau.
         m_active = re.search(r'Tin\s+đăng\s+đang\s+có[^0-9]*(\d+)', html, re.IGNORECASE)
         if m_active:
             listing.poster_total_listings = int(m_active.group(1))
         else:
             m_more = re.search(r'Xem thêm\s+(\d+)\s+tin khác', html, re.IGNORECASE)
-            listing.poster_total_listings = int(m_more.group(1)) + 1 if m_more else 1
+            listing.poster_total_listings = int(m_more.group(1)) + 1 if m_more else None
+        key = "detail_ok" if listing.poster_total_listings is not None else "detail_unreadable"
+        self.cycle_health[key] = self.cycle_health.get(key, 0) + 1
 
     # ────────────────────────── GURU PROFILE (lazy) ──────────────────────────
 
@@ -536,12 +588,14 @@ class BatdongsanSpider(BaseSpider):
 
     # ────────────────────────── HELPERS ──────────────────────────
 
-    async def _stealth_fetch(self, url: str, loop: Any, wait: int = 3000) -> Any:
+    async def _stealth_fetch(self, url: str, loop: Any = None, wait: int = 3000) -> Any:
         # wait: đủ để BDS render static HTML (contact_name, poster_total_listings).
         # network_idle=True giúp bot trông giống người thật hơn, tránh bị Cloudflare bắt.
-        kwargs: dict = dict(wait=wait, timeout=60000, network_idle=True)
-        fn = self._fetch_impl
-        return await loop.run_in_executor(None, lambda: fn(url, **kwargs))
+        # Fetch qua session dùng chung của cycle (loop giữ trong signature cho tương
+        # thích các call site cũ, không dùng nữa).
+        if self._session is None:
+            raise RuntimeError("batdongsan session chưa mở — _stealth_fetch chỉ gọi được trong fetch_listings")
+        return await self._session.fetch(url, wait=wait, network_idle=True)
 
     def _page_url(self, start_url: str, page_num: int) -> str:
         if "?" in start_url:

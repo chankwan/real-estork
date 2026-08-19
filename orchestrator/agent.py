@@ -75,7 +75,34 @@ _REASON_LABELS = {
     "pho_phu": "phố phụ",
     "db_error": "lỗi DB",
     "telegram_fail": "lỗi Telegram",
+    "chua_xac_minh_nguoi_ban": "hoãn — chưa đọc được số tin đăng",
 }
+
+# Số lần thử đọc số tin đăng của người bán (batdongsan) trước khi bỏ cuộc.
+# 1 lần lúc crawl + 2 lần thử lại ở 2 cycle sau (~20 phút/cycle).
+_BDS_MAX_VERIFY_ATTEMPTS = 3
+
+# Chuông "đói tin" batdongsan: số cycle liên tiếp 0 trang đọc được trước khi báo
+# Telegram admin (6 cycle × 20 phút ≈ 2h — đủ chậm để bỏ qua trục trặc thoáng qua).
+_BDS_STARVE_CYCLES = 6
+
+
+def _bds_poster_count_unknown(listing: Any) -> bool:
+    """
+    True khi CHƯA xác minh được người bán batdongsan đang có bao nhiêu tin đăng.
+
+    Hai đường dẫn tới "chưa biết", cả hai đều KHÔNG được coi là chính chủ:
+      None → trang chi tiết đọc được nhưng không thấy số (nút "Xem thêm N tin
+             khác" do JS render, lúc kịp lúc không)
+      -1   → fetch trang chi tiết hỏng hẳn (Cloudflare chặn)
+
+    Chốt chặn môi giới chỉ hỏi "> 5 tin?" nên cả hai giá trị này đều lọt qua nó;
+    đây là hàng rào thứ hai (audit 2026-08-18).
+    """
+    if getattr(listing, "source", "") != "batdongsan":
+        return False
+    count = getattr(listing, "poster_total_listings", None)
+    return count is None or count < 0
 
 
 def _format_skip_summary(reasons: Counter) -> str:
@@ -119,6 +146,16 @@ class RealEstorkAgent:
         # FB capture heartbeat: True = đang trong "đợt im lặng" đã báo Telegram
         # (chỉ báo 1 lần/đợt; hồi phục thì báo lại + reset).
         self._fb_capture_silent = False
+        # Batdongsan: tin đã crawl nhưng chưa đọc được số tin đăng của người bán.
+        # source_id → (listing, số lần đã thử). Cycle sau đọc lại trang chi tiết.
+        # Cố ý KHÔNG lưu DB khi đang hoãn — bot restart thì tin quay lại như tin mới.
+        self._bds_pending: dict[str, tuple[Any, int]] = {}
+        # Chuông "đói tin" batdongsan: N cycle liên tiếp fetch 0 tin → Telegram admin
+        # (sự cố 15-18/08: 63 cycle trắng liên tiếp vì Cloudflare, không ai được báo).
+        self._bds_zero_streak = 0
+        self._bds_starved_alerted = False
+        # Tích luỹ health 24h cho daily digest (reset sau mỗi digest).
+        self._bds_day_health: Counter = Counter()
         # Spiders can run concurrently using ThreadPoolExecutor and scrapling StealthyFetcher.
 
         # Load schedule config
@@ -463,11 +500,23 @@ class RealEstorkAgent:
         # Seed seen_ids so spider can early-stop on dedup-heavy pages
         spider.seen_ids = set(self.dedup.seen_source_ids)
 
+        # Nạp tin hoãn vào spider để enrich lại trong CÙNG session của cycle này
+        # (cf_clearance dùng chung — không tốn lượt giải Cloudflare riêng).
+        pending = list(self._bds_pending.values())
+        self._bds_pending.clear()
+        spider.pending_retry = [l for l, _ in pending]
+
         try:
             raw_listings = await spider.run()
             logger.info(f"[orchestrator] batdongsan fetched {len(raw_listings)} raw listings")
 
-            if not raw_listings:
+            self._track_bds_health(spider, len(raw_listings))
+            await self._check_bds_starvation(spider)
+
+            # Resolve tin hoãn: spider đã enrich in-place trong session
+            retried_listings = self._resolve_bds_pending(pending)
+
+            if not raw_listings and not retried_listings:
                 return
 
             # Lưu tin pro-agent (badge môi giới chuyên nghiệp) vào DB — không alert
@@ -490,14 +539,22 @@ class RealEstorkAgent:
 
             new_listings = self.dedup.filter_new(raw_listings)
             logger.info(f"[orchestrator] {len(new_listings)} new batdongsan listings after dedup")
-            if not new_listings:
+
+            # Tin thử lại đã qua dedup từ cycle trước → không lọc lại, ghép thẳng vào.
+            to_process = retried_listings + new_listings
+            if not to_process:
                 return
 
             processed_count = 0
             alerted_count = 0
             skip_reasons: Counter = Counter()
-            for listing in new_listings:
+            for listing in to_process:
                 try:
+                    # Chưa biết người bán có bao nhiêu tin đăng → hoãn, không alert.
+                    if _bds_poster_count_unknown(listing):
+                        self._queue_bds_pending(listing)
+                        skip_reasons["chua_xac_minh_nguoi_ban"] += 1
+                        continue
                     reason = await self._process_listing(listing)
                     processed_count += 1
                     if reason == "alerted":
@@ -510,8 +567,10 @@ class RealEstorkAgent:
             duration = time.time() - cycle_start
             skip_summary = _format_skip_summary(skip_reasons)
             logger.info(
-                f"[orchestrator] ✅ Batdongsan cycle done: {len(new_listings)} new, "
+                f"[orchestrator] ✅ Batdongsan cycle done: {len(new_listings)} new"
+                f"{f' + {len(retried_listings)} thử lại' if retried_listings else ''}, "
                 f"{processed_count} processed, {alerted_count} sent to Telegram"
+                f"{f' | hàng chờ: {len(self._bds_pending)}' if self._bds_pending else ''}"
                 f"{' | ' + skip_summary if skip_reasons else ''} | {duration:.1f}s"
             )
             self.db.log_spider_run(
@@ -523,10 +582,115 @@ class RealEstorkAgent:
             )
         except Exception as e:
             logger.error(f"[orchestrator] Batdongsan cycle error: {e}")
+            # Cycle chết giữa chừng: tin hoãn quay lại hàng chờ (tăng lượt — session
+            # hỏng cũng là 1 lần thử thất bại), health vẫn được track để chuông kêu.
+            self._resolve_bds_pending(pending)
+            self._track_bds_health(spider, 0)
+            await self._check_bds_starvation(spider)
             self.db.log_spider_run(
                 spider_name="batdongsan",
                 status="failed",
                 error_message=str(e),
+            )
+
+    def _resolve_bds_pending(self, pending: list[tuple[Any, int]]) -> list[Any]:
+        """
+        Sau spider.run(): tin hoãn đã được enrich in-place trong session của cycle.
+        Đọc được số tin đăng → trả về để chấm điểm; vẫn chưa → quay lại hàng chờ
+        (hết lượt thì bỏ cuộc — xem _queue_bds_pending).
+        """
+        resolved: list[Any] = []
+        for listing, attempts in pending:
+            if _bds_poster_count_unknown(listing):
+                self._queue_bds_pending(listing, attempts)
+            else:
+                resolved.append(listing)
+                logger.info(
+                    f"[orchestrator] batdongsan/{listing.source_id}: đọc lại được "
+                    f"active={listing.poster_total_listings} (lần {attempts + 1})"
+                )
+        return resolved
+
+    def _track_bds_health(self, spider: Any, raw_count: int) -> None:
+        """Cộng dồn health counters của cycle vào bộ đếm 24h cho daily digest."""
+        health = getattr(spider, "cycle_health", {}) or {}
+        self._bds_day_health.update(health)
+        self._bds_day_health["cycles"] += 1
+        if raw_count == 0:
+            self._bds_day_health["zero_cycles"] += 1
+
+    def _format_bds_health(self, health: dict) -> str:
+        """1 dòng chẩn đoán từ health counters — dùng chung cho chuông + digest."""
+        return (
+            f"list OK/CF/mất-card: {health.get('list_pages_ok', 0)}"
+            f"/{health.get('list_cf_blocked', 0)}/{health.get('list_no_cards', 0)} | "
+            f"detail OK/CF/không-số: {health.get('detail_ok', 0)}"
+            f"/{health.get('detail_cf', 0)}/{health.get('detail_unreadable', 0)}"
+        )
+
+    async def _check_bds_starvation(self, spider: Any) -> None:
+        """
+        Chuông "đói tin": _BDS_STARVE_CYCLES cycle liên tiếp không đọc được trang
+        danh sách nào → Telegram admin 1 lần/đợt kèm chẩn đoán nguyên nhân
+        (Cloudflare vs selector đổi), báo lại khi hồi phục. Cùng pattern heartbeat FB.
+        """
+        raw_ok = getattr(spider, "cycle_health", {}).get("list_pages_ok", 0) > 0
+        if raw_ok:
+            if self._bds_starved_alerted:
+                await self.telegram.send_admin(
+                    "✅ Batdongsan HỒI PHỤC — đã đọc lại được trang danh sách "
+                    f"sau {self._bds_zero_streak} cycle trắng."
+                )
+                self._bds_starved_alerted = False
+            self._bds_zero_streak = 0
+            return
+
+        self._bds_zero_streak += 1
+        if self._bds_zero_streak >= _BDS_STARVE_CYCLES and not self._bds_starved_alerted:
+            self._bds_starved_alerted = True
+            health = getattr(spider, "cycle_health", {}) or {}
+            await self.telegram.send_admin(
+                f"🚨 Batdongsan ĐÓI TIN — {self._bds_zero_streak} cycle liên tiếp "
+                f"không đọc được trang nào (~{self._bds_zero_streak * 20} phút).\n"
+                f"Chẩn đoán cycle gần nhất: {self._format_bds_health(health)}\n"
+                f"→ CF cao = Cloudflare nâng chặn; mất-card cao = BDS đổi UI/selector."
+            )
+
+    def _queue_bds_pending(self, listing: Any, attempts: int = 0) -> None:
+        """
+        Đưa tin vào hàng chờ đọc lại số tin đăng của người bán.
+
+        Hết _BDS_MAX_VERIFY_ATTEMPTS lượt → bỏ cuộc: lưu DB (để lần crawl sau
+        không lôi lại mãi) nhưng KHÔNG alert — thiếu bằng chứng thì không được
+        coi là chính chủ.
+        """
+        attempts += 1
+        if attempts < _BDS_MAX_VERIFY_ATTEMPTS:
+            self._bds_pending[listing.source_id] = (listing, attempts)
+            logger.info(
+                f"[orchestrator] batdongsan/{listing.source_id}: chưa đọc được số tin "
+                f"đăng (active={getattr(listing, 'poster_total_listings', None)}) — "
+                f"hoãn, thử lại cycle sau ({attempts}/{_BDS_MAX_VERIFY_ATTEMPTS})"
+            )
+            return
+
+        logger.info(
+            f"[orchestrator] batdongsan/{listing.source_id}: bỏ cuộc sau {attempts} "
+            f"lần thử đọc số tin đăng — lưu DB, không alert"
+        )
+        try:
+            data = listing.to_dict()
+            data.update({
+                "address_normalized": listing.address,
+                "classification_score": 0,
+                "classification_label": "can_xac_minh",
+                "status": "unverified_poster",
+            })
+            self.db.upsert_listing(data)
+        except Exception as e:
+            logger.warning(
+                f"[orchestrator] lưu tin chưa xác minh {listing.source_id} lỗi: "
+                f"{type(e).__name__}: {e}"
             )
 
     # =========================================================
@@ -775,6 +939,17 @@ class RealEstorkAgent:
             f"🎯 Accuracy tuần này: {feedback_analysis.get('accuracy', 'N/A')}% "
             f"({feedback_analysis.get('total_samples', 0)} samples)\n"
         )
+
+        # Health batdongsan 24h — phát hiện xu hướng BDS siết chặn tăng dần
+        # (kiểu 11→14/08: tỉ lệ Cloudflare nhích dần trước khi chặn hẳn).
+        bh = self._bds_day_health
+        if bh.get("cycles"):
+            digest += (
+                f"\n🕷 Batdongsan 24h: {bh['cycles']} cycle, "
+                f"{bh.get('zero_cycles', 0)} cycle trắng\n"
+                f"   {self._format_bds_health(bh)}\n"
+            )
+        self._bds_day_health = Counter()
 
         telegram_admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
         if telegram_admin_id:

@@ -12,6 +12,12 @@ _(không có item chờ)_
 
 ## 🐞 Bug đã biết, chưa fix
 
+### Signal `account_new_or_few_posts` crash khi `poster_total_listings=None`
+- **Operator thấy gì**: không thấy gì — classifier catch exception, signal chỉ âm thầm không fire. Log ERROR `'<=' not supported between instances of 'NoneType' and 'int'`.
+- **Chi tiết (session 22)**: `pipeline/signals.py` `check_account_new_or_few_posts` so sánh `ctx.poster_total_listings <= 2` — sau session 22 giá trị có thể là None (SignalContext fallback `stats.get(...)` trả None khi phone_stats không có key). Chỉ cấu hình cho nhatot.
+- **Mức độ**: thấp — bị catch, không crash bot; nhưng signal +15 của nhatot có thể im lặng không fire.
+
+
 ### Pre-existing test failure: `test_known_broker_phone_crushes_score`
 - File: `tests/test_pipeline.py`
 - Triệu chứng: signal `is_known_broker` không fire khi phone_stats có `is_known_broker=True`. Score=68 thay vì <40 như expected.
@@ -45,6 +51,12 @@ _(không có item chờ)_
 ---
 
 ## 🔧 Vận hành (chưa chỉnh)
+
+### Hàng chờ duyệt tay: gửi Telegram tin BDS "bỏ cuộc" (unverified_poster) cho người duyệt
+- **Đề xuất user (2026-08-19)**: tin batdongsan sau 3 lượt vẫn không đọc được số tin đăng → lưu DB không alert; user muốn các tin này được trình ra Telegram để duyệt tay.
+- **Đã chốt hướng**: gộp cuối mỗi cycle (1 tin nhắn liệt kê), kèm chốt chặn flood: >10 tin/cycle → gửi cảnh báo hệ thống thay vì liệt kê. Gửi vào admin chat (đề xuất, chưa chốt với user).
+- **Lùi lại vì**: sau fix session 22 (session + solve_cloudflare) tỉ lệ "bỏ cuộc" thật chưa đo được — cần vài ngày data trước khi thiết kế. Nếu tỉ lệ ~0 thì không cần làm.
+
 
 ### PC2 chưa tắt Sleep + Chrome Memory Saver → capture FB có thể chết khi máy idle
 - **Bối cảnh (session 2026-07-07)**: Đã fix throttling (cờ Chrome trong `bot-fb-scan.bat` — minimize/che cửa sổ vẫn scan). Nhưng nếu **PC2 ngủ (Sleep)** hoặc **Chrome Memory Saver freeze tab** khi idle lâu → cả capture lẫn bot đứng. Nghi phạm còn lại cho các khoảng im dài.
