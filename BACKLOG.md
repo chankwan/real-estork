@@ -83,4 +83,4 @@ _(không có item chờ)_
 ---
 
 ## 🧹 Dọn dẹp
-- File rác `cd` (0-byte) ở root repo — xoá (`rm cd`), chưa track vào git.
+- ~~File rác `cd` (0-byte) ở root repo~~ ✅ Đã xoá (2026-08-19).
