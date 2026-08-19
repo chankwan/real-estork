@@ -86,6 +86,11 @@ _BDS_MAX_VERIFY_ATTEMPTS = 3
 # Telegram admin (6 cycle × 20 phút ≈ 2h — đủ chậm để bỏ qua trục trặc thoáng qua).
 _BDS_STARVE_CYCLES = 6
 
+# Hàng chờ duyệt tay: số tin tối đa liệt kê trong 1 tin nhắn. Vượt ngưỡng →
+# gửi cảnh báo hệ thống thay vì liệt kê, vì lúc đó vấn đề là batdongsan chặn
+# hàng loạt chứ không phải vài tin cá biệt cần người xem (chống flood).
+_BDS_REVIEW_MAX_ITEMS = 10
+
 
 def _bds_poster_count_unknown(listing: Any) -> bool:
     """
@@ -156,6 +161,8 @@ class RealEstorkAgent:
         self._bds_starved_alerted = False
         # Tích luỹ health 24h cho daily digest (reset sau mỗi digest).
         self._bds_day_health: Counter = Counter()
+        # Tin bỏ cuộc trong cycle này → gộp 1 tin nhắn "cần duyệt tay" cuối cycle.
+        self._bds_review_batch: list[Any] = []
         # Spiders can run concurrently using ThreadPoolExecutor and scrapling StealthyFetcher.
 
         # Load schedule config
@@ -580,6 +587,7 @@ class RealEstorkAgent:
                 new_listings=len(new_listings),
                 duration_seconds=duration,
             )
+            await self._send_bds_review_batch(spider)
         except Exception as e:
             logger.error(f"[orchestrator] Batdongsan cycle error: {e}")
             # Cycle chết giữa chừng: tin hoãn quay lại hàng chờ (tăng lượt — session
@@ -592,6 +600,7 @@ class RealEstorkAgent:
                 status="failed",
                 error_message=str(e),
             )
+            await self._send_bds_review_batch(spider)
 
     def _resolve_bds_pending(self, pending: list[tuple[Any, int]]) -> list[Any]:
         """
@@ -610,6 +619,55 @@ class RealEstorkAgent:
                     f"active={listing.poster_total_listings} (lần {attempts + 1})"
                 )
         return resolved
+
+    async def _send_bds_review_batch(self, spider: Any) -> None:
+        """
+        Cuối cycle: gộp các tin bot đã bỏ cuộc thành 1 tin nhắn cho người duyệt tay.
+
+        Gộp theo cycle (không gửi từng tin) để không ngập máy như sự cố alert FB;
+        cũng không gộp theo ngày vì tin BĐS quá 24h là nguội, duyệt cũng vô nghĩa.
+        """
+        batch = self._bds_review_batch
+        self._bds_review_batch = []
+        if not batch:
+            return
+
+        if len(batch) > _BDS_REVIEW_MAX_ITEMS:
+            # Quá nhiều tin không xác minh được = hệ thống có vấn đề, không phải
+            # việc của người duyệt. Báo 1 dòng kèm chẩn đoán thay vì liệt kê.
+            health = getattr(spider, "cycle_health", {}) or {}
+            await self.telegram.send_review(
+                f"⚠️ <b>Batdongsan: {len(batch)} tin không xác minh được trong 1 cycle</b>\n"
+                f"Quá nhiều để duyệt tay — nhiều khả năng batdongsan đang chặn bot, "
+                f"không phải tin cá biệt.\n"
+                f"Chẩn đoán: {self._format_bds_health(health)}\n"
+                f"Các tin đã lưu DB với trạng thái <code>unverified_poster</code>."
+            )
+            logger.info(
+                f"[orchestrator] hàng duyệt tay: {len(batch)} tin > ngưỡng "
+                f"{_BDS_REVIEW_MAX_ITEMS} → gửi cảnh báo hệ thống thay vì liệt kê"
+            )
+            return
+
+        lines = [
+            f"🔍 <b>CẦN DUYỆT TAY — batdongsan ({len(batch)} tin)</b>",
+            "Bot thử 3 lần vẫn không đọc được người bán đang có bao nhiêu tin đăng "
+            "→ không tự phân loại chính chủ/môi giới được.",
+            "",
+        ]
+        for i, l in enumerate(batch, 1):
+            price = (
+                f"{l.price_vnd_monthly / 1_000_000:.0f} triệu/tháng"
+                if getattr(l, "price_vnd_monthly", None) else "chưa rõ giá"
+            )
+            district = getattr(l, "district", "") or "chưa rõ quận"
+            title = (getattr(l, "title", "") or "(không tiêu đề)")[:70]
+            lines.append(f"{i}. <b>{title}</b>")
+            lines.append(f"   {price} · {district}")
+            if getattr(l, "source_url", ""):
+                lines.append(f"   {l.source_url}")
+        await self.telegram.send_review("\n".join(lines))
+        logger.info(f"[orchestrator] hàng duyệt tay: đã gửi {len(batch)} tin")
 
     def _track_bds_health(self, spider: Any, raw_count: int) -> None:
         """Cộng dồn health counters của cycle vào bộ đếm 24h cho daily digest."""
@@ -676,8 +734,9 @@ class RealEstorkAgent:
 
         logger.info(
             f"[orchestrator] batdongsan/{listing.source_id}: bỏ cuộc sau {attempts} "
-            f"lần thử đọc số tin đăng — lưu DB, không alert"
+            f"lần thử đọc số tin đăng — lưu DB, không alert, đưa vào hàng duyệt tay"
         )
+        self._bds_review_batch.append(listing)
         try:
             data = listing.to_dict()
             data.update({

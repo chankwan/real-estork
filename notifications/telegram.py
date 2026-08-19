@@ -53,6 +53,33 @@ class TelegramNotifier:
         except TelegramError as e:
             logger.error(f"[telegram] send_admin error: {e}")
 
+    async def send_review(self, text: str) -> None:
+        """
+        Gửi tin "cần duyệt tay" — tin bot không tự phân loại được.
+
+        Đích đến theo thứ tự ưu tiên:
+          1. Group + topic riêng nếu có TELEGRAM_BDS_REVIEW_TOPIC_ID (tạo topic
+             trong group rồi điền ID vào .env) — tách khỏi luồng alert của vợ.
+          2. Chưa cấu hình topic → chat admin (việc vận hành, không làm phiền group).
+        """
+        if not self.is_configured:
+            return
+        topic = os.environ.get("TELEGRAM_BDS_REVIEW_TOPIC_ID", "")
+        group_id = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "")
+        if topic.isdigit() and group_id:
+            try:
+                await self.bot.send_message(
+                    chat_id=group_id,
+                    text=text,
+                    parse_mode="HTML",
+                    message_thread_id=int(topic),
+                    disable_web_page_preview=True,
+                )
+                return
+            except TelegramError as e:
+                logger.error(f"[telegram] send_review to group topic {topic} error: {e}")
+        await self.send_admin(text)
+
     async def send_lifecycle(self, text: str) -> None:
         """Send bot lifecycle event (start/stop/crash) to admin + group General topic."""
         if not self.is_configured:

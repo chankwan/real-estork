@@ -52,33 +52,9 @@ _(không có item chờ)_
 
 ## 🔧 Vận hành (chưa chỉnh)
 
-### Hàng chờ duyệt tay: gửi Telegram tin BDS "bỏ cuộc" (unverified_poster) cho người duyệt
-- **Đề xuất user (2026-08-19)**: tin batdongsan sau 3 lượt vẫn không đọc được số tin đăng → lưu DB không alert; user muốn các tin này được trình ra Telegram để duyệt tay.
-- **Đã chốt hướng**: gộp cuối mỗi cycle (1 tin nhắn liệt kê), kèm chốt chặn flood: >10 tin/cycle → gửi cảnh báo hệ thống thay vì liệt kê. Gửi vào admin chat (đề xuất, chưa chốt với user).
-- **Lùi lại vì**: sau fix session 22 (session + solve_cloudflare) tỉ lệ "bỏ cuộc" thật chưa đo được — cần vài ngày data trước khi thiết kế. Nếu tỉ lệ ~0 thì không cần làm.
-
-
-### PC2 chưa tắt Sleep + Chrome Memory Saver → capture FB có thể chết khi máy idle
-- **Bối cảnh (session 2026-07-07)**: Đã fix throttling (cờ Chrome trong `bot-fb-scan.bat` — minimize/che cửa sổ vẫn scan). Nhưng nếu **PC2 ngủ (Sleep)** hoặc **Chrome Memory Saver freeze tab** khi idle lâu → cả capture lẫn bot đứng. Nghi phạm còn lại cho các khoảng im dài.
-- **Cần làm** (thao tác tay, không code): Power → Sleep → **Never** (ít nhất khi cắm điện); `chrome://settings/performance` → tắt **Memory Saver** (hoặc thêm facebook.com vào "always keep active").
-
-### ~~Gắn `bot-fb-scan.bat` vào Task Scheduler -AtLogon (Mức 2 auto-start capture)~~ ✅ XONG (2026-07-22)
-- Task "RealEstork FB Scan" (-AtLogon, delay 45s) chạy `bot-fb-scan.bat /auto`. Chế độ `/auto`: không pause + tự kill Chrome capture còn sót (kể cả process nền Startup Boost giữ singleton nuốt cờ launch). Thêm cờ `--hide-crash-restore-bubble` (không treo popup "Restore pages?" sau crash). Detector Chrome capture đổi sang match ExecutablePath (fix miss process không args).
-- **Lưu ý vận hành**: capture tự bật lại sau MỌI lần logon → muốn tạm ngưng FB thật sự phải TẮT extension Tampermonkey trong Chrome (đóng cửa sổ là chưa đủ), hoặc Disable task "RealEstork FB Scan".
-
-### Chống flood thông báo Telegram FB (theo topic) — đang nghiên cứu
-- **Vấn đề (2026-07-08)**: Alert FB ping ngập máy vợ + đồng nghiệp → user tạm tắt FB (switch-off Tampermonkey).
-- **2 hướng giải**:
-  - **Tầng 1 (native, per-user, 0 code)**: mỗi người mute topic FB Chủ/Khách trong forum group (nhấn giữ topic → Mute); portal topic vẫn ping. Tin vẫn tới, chỉ không ping.
-  - **Tầng 2 (bot, cả group, 1 sửa nhỏ)**: bot gửi tin FB với `disable_notification=True` → hiện trong topic nhưng KHÔNG ping ai; portal vẫn ping. Biến thể: group im + vẫn ping riêng chat admin của vợ.
-- **Cần chốt trước khi làm**: vợ có muốn còn ping realtime cho tin Chủ giá trị không → quyết Tầng 1 vs Tầng 2 vs biến thể.
-- **Chỗ sửa nếu chọn Tầng 2**: `notifications/telegram.py` → `send_listing_alert` (thêm `disable_notification` theo source == facebook_groups).
-
-### ~~Watchdog Mức 3: heartbeat capture (phát hiện capture chết)~~ ✅ XONG (2026-07-22)
-- Userscript v1.2.0 ping `/heartbeat` mỗi 60s (POST thành công vào `/ingest` cũng tính là sống). Bot check mỗi FB cycle (3 phút): đã TỪNG nhận heartbeat mà im >15 phút (`heartbeat_alert_minutes` trong spiders.yaml) → Telegram admin nhắc mở lại capture, 1 lần/đợt + báo khi hồi phục. CHƯA TỪNG nhận từ lúc bot start → im lặng (chủ đích tắt extension thì không nag).
-- **Còn lại (thủ công)**: paste userscript v1.2.0 vào Tampermonkey trên Chrome capture (bản cũ 1.1.3 không có heartbeat — bot vẫn coi "sống" qua ingest, nhưng hết tin mới ≠ chết sẽ lại mơ hồ cho tới khi update).
-
----
+### ~~Hàng chờ duyệt tay: gửi Telegram tin BDS "bỏ cuộc"~~ ✅ XONG (2026-08-19)
+- Cuối mỗi cycle batdongsan, tin nào bot thử 3 lần vẫn không đọc được số tin đăng của người bán → gộp 1 tin nhắn "🔍 CẦN DUYỆT TAY" (tiêu đề + giá + quận + link). Vượt 10 tin/cycle → gửi cảnh báo hệ thống kèm chẩn đoán thay vì liệt kê (chống flood).
+- **Đích đến**: mặc định chat admin. Muốn vào topic riêng trong group → tạo topic, lấy ID, set `TELEGRAM_BDS_REVIEW_TOPIC_ID` trong `.env` (dùng `tools/tg_get_topic_id.py`).
 
 ## 🚀 Cải tiến Facebook Groups
 
