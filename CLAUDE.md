@@ -79,6 +79,11 @@ python -m cli.main classify <id>      # debug scoring for a listing
 - **Fix fetch (session + solve_cloudflare)** — `spiders/batdongsan.py`:
   - `fetch_listings` chuyển từ "1 browser/trang qua StealthyFetcher + executor" sang **1 `AsyncStealthySession`/cycle** với `solve_cloudflare=True`, `max_pages=detail_concurrency` (tab pool), `timeout=180s`. Giải challenge 1 lần (~2-3 phút) → mọi trang sau đi bằng cf_clearance (~7-12s/trang). Verify live 2026-08-19 (lúc BDS đang chặn thật): 2 list page + 3 detail đều 200, đọc số tin đăng 3/3 — trong đó "Ms Thư" active=712 (đúng môi giới trong audit) → giờ bị veto ngay.
   - Tin hoãn được orchestrator nạp vào `spider.pending_retry` TRƯỚC `spider.run()` → enrich lại trong CÙNG session (không tốn lượt solve riêng).
+- **Fix bổ sung cùng ngày — đọc trang guru khi trang chi tiết thiếu số** (user phản hồi tin `pr46216077` bị hoãn oan):
+  - **Phát hiện**: trang chi tiết để trống ô "số tin đăng" trong CẢ HAI trường hợp — chủ nhà đúng 1 tin (không có nút "Xem thêm N tin khác" vì không có tin nào khác) VÀ môi giới nhiều tin nhưng nút chưa render. Không thể phân biệt từ trang chi tiết. Fallback cũ (mặc định 1) sai với môi giới; fix A (coi là chưa biết) hoãn oan chính chủ.
+  - **Lời giải**: bật lại `enrich_from_profile()` (code chết từ session 5) làm **pass 3** — tin nào thiếu số nhưng có link guru → đọc trang profile, nơi ghi rõ con số kể cả khi bằng 1. Chạy trong cùng session (không tốn lượt giải Cloudflare), ~7-8s/tin, chỉ áp cho tin thiếu số nên vài tin/cycle.
+  - Bỏ tham chiếu `self._fetch_impl` (không còn tồn tại sau khi chuyển sang session) — đây là lý do method này sẽ crash nếu được gọi.
+  - **Verify live**: chủ 1 tin (Nguyệt, pr46216077) → guru đọc ra `1` + tham gia 2025 → giờ được +25 chính chủ thay vì bị hoãn; môi giới (Newland Sg) → `101` → veto ngay. Tin không có link guru → giữ nguyên "chưa biết". Health counter `guru_ok`/`guru_fail` để theo dõi.
 - **Chuông đói tin + health (option B+D)**:
   - Spider đếm `cycle_health` (list ok/cf/no-cards, detail ok/cf/unreadable) tại đúng các điểm phát hiện lỗi.
   - Orchestrator: `_check_bds_starvation` — `_BDS_STARVE_CYCLES=6` cycle liên tiếp không đọc được trang list nào (~2h) → Telegram admin 1 lần/đợt kèm chẩn đoán (CF cao = nâng chặn / mất-card = đổi UI), báo khi hồi phục. Cùng pattern heartbeat FB.

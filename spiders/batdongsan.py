@@ -176,6 +176,12 @@ class BatdongsanSpider(BaseSpider):
             if self.pending_retry:
                 logger.info(f"[batdongsan] Đọc lại {len(self.pending_retry)} tin hoãn trong cùng session")
                 await asyncio.gather(*(_enrich(l) for l in self.pending_retry))
+
+            # ── Trang chi tiết không có số tin đăng → hỏi trang guru ─────────
+            # Trang chi tiết để trống ô này trong CẢ HAI trường hợp: chủ nhà đúng
+            # 1 tin (không có nút "Xem thêm N tin khác" vì chẳng có tin nào khác)
+            # và môi giới nhiều tin nhưng nút chưa render. Chỉ guru phân biệt được.
+            await self._enrich_unknown_from_profile(all_listings + self.pending_retry, sem)
         finally:
             self._session = None
             try:
@@ -552,20 +558,57 @@ class BatdongsanSpider(BaseSpider):
 
     # ────────────────────────── GURU PROFILE (lazy) ──────────────────────────
 
+    async def _enrich_unknown_from_profile(self, listings: list[RawListing], sem: Any) -> None:
+        """
+        Pass 3: với tin chưa có số tin đăng nhưng có link guru → đọc profile.
+
+        Chỉ chạy cho tin thiếu số (thường vài tin/cycle) nên chi phí nhỏ: ~7-8s/tin,
+        chạy song song theo cùng semaphore với pass 2.
+        """
+        targets = [
+            l for l in listings
+            if l.poster_total_listings is None and l.poster_profile_hash
+        ]
+        if not targets:
+            return
+        logger.info(f"[batdongsan] {len(targets)} tin thiếu số tin đăng → đọc trang guru")
+
+        async def _profile(l: RawListing) -> None:
+            async with sem:
+                try:
+                    ok = await self.enrich_from_profile(l)
+                except Exception as e:
+                    logger.warning(
+                        f"[batdongsan] guru {l.source_id} lỗi: {type(e).__name__}: {e}"
+                    )
+                    ok = False
+                if ok and l.poster_total_listings is not None:
+                    self.cycle_health["guru_ok"] = self.cycle_health.get("guru_ok", 0) + 1
+                    self.cycle_health["detail_unreadable"] = max(
+                        0, self.cycle_health.get("detail_unreadable", 0) - 1
+                    )
+                    logger.info(
+                        f"[batdongsan] guru {l.source_id}: tin đăng đang có "
+                        f"{l.poster_total_listings}, tham gia năm {l.poster_join_year}"
+                    )
+                else:
+                    self.cycle_health["guru_fail"] = self.cycle_health.get("guru_fail", 0) + 1
+
+        await asyncio.gather(*(_profile(l) for l in targets))
+
     async def enrich_from_profile(self, listing: RawListing) -> bool:
         """
-        Called by orchestrator for listings in the classifier uncertainty window.
-        Fetches guru profile page → populates poster_total_listings +
-        poster_join_year. Returns True iff parse succeeded.
+        Đọc trang guru (profile người đăng) → poster_total_listings + poster_join_year.
+        Trả True nếu parse được ít nhất 1 trong 2.
+
+        Đây là nguồn DUY NHẤT phân biệt được "chủ nhà đúng 1 tin" với "nút số tin
+        đăng không render" — trang chi tiết KHÔNG hiện số trong cả hai trường hợp
+        (verify 2026-08-19: tin pr46216077 của chủ 1 tin → trang chi tiết trống,
+        trang guru ghi rõ "Tin đăng đang có 1"; còn tin 46162437 cũng trống nhưng
+        profile là môi giới 32 tin). Guru cũng ít bị Cloudflare hơn trang chi tiết.
         """
         if not listing.poster_profile_hash:
             return False
-        if self._fetch_impl is None:
-            try:
-                from scrapling import StealthyFetcher
-                self._fetch_impl = StealthyFetcher.fetch
-            except ImportError:
-                return False
 
         url = f"{GURU_BASE}/pa/{listing.poster_profile_hash}"
         loop = asyncio.get_running_loop()
