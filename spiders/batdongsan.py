@@ -279,13 +279,29 @@ class BatdongsanSpider(BaseSpider):
                     page_parsed.append(parsed)
                     continue
 
-                # Tin thường: 
+                # Tin thường:
                 page_normal_count += 1
                 if is_dup:
                     page_normal_dedup_hit += 1
 
                 if parsed.posted_at is not None and not self._is_posted_today(parsed.posted_at):
                     page_non_today += 1
+
+                # Tin đã biết → KHÔNG mở trang chi tiết nữa (VIP đã skip từ trước,
+                # giờ tin thường cũng vậy). Trước đây mỗi cycle mở lại chi tiết cả
+                # ~400 tin cũ dù chỉ 8 tin mới — ~10s/tin, 3 luồng ≈ 23 phút/cycle
+                # tiêu vào việc đọc lại thứ đã chấm điểm và đã gửi rồi (đo 2026-08-19:
+                # cycle 65 phút cho 8 tin mới). Lãng phí này có sẵn nhưng bị che vì
+                # trước đó fetch detail luôn fail nhanh do Cloudflare.
+                # Lưu ý: 2 counter early-stop ở trên vẫn đếm tin dup (đếm TRƯỚC skip),
+                # nên early-stop theo dedup-ratio và theo tuổi tin không đổi hành vi.
+                # Đánh đổi: `same_session_account_count` giờ chỉ đếm tin mới trong
+                # batch — môi giới có tin cũ đã seen sẽ ra số nhỏ hơn; chấp nhận được
+                # vì tín hiệu mạnh hơn (`poster_total_listings > 5` từ trang chi tiết)
+                # vẫn bắt đúng họ.
+                if is_dup:
+                    continue
+
                 page_parsed.append(parsed)
 
             logger.info(
