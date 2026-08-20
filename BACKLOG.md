@@ -36,12 +36,11 @@ _(không có item chờ)_
 - **Phụ (tùy chọn)**: thêm UPS nhỏ cho PC2 để chịu được chớp điện ngắn; hoặc Telegram heartbeat "bot còn sống mỗi N giờ" để phát hiện downtime sớm thay vì chờ vợ báo.
 - **Mức độ**: trung bình — không mất dữ liệu (dedup cache + DB còn nguyên), nhưng mất coverage tin mới suốt thời gian down.
 
-### Bot chạy 2 process (parent+child) → `bot-stop` để lại orphan → tích luỹ nhiều instance
-- **Operator thấy gì**: Sau vài lần start/stop, Task Manager có nhiều `pythonw` cli.main cùng chạy → scraping trùng, có thể bị site chặn (muaban HTTP 403).
-- **Chi tiết (session 2026-07-07)**: 1 lần `pythonw -m cli.main start` đẻ ra 2 process — parent + child; **child giữ lock + chạy scheduler**, parent không schedule (lock chặn). `bot-stop.bat` đọc PID trong lock (child) rồi `taskkill /F` **không có `/T`** → chỉ kill child, **parent orphan**. Lần start kế đẻ thêm cặp mới → tích luỹ.
-- **Chưa rõ**: vì sao `cli.main start` đẻ child (grep `cli/main.py` không thấy subprocess/fork ở lệnh start — chỉ ở `stop`). Cần trace nguồn gốc process con.
-- **Giải pháp đề xuất**: (a) `bot-stop` dùng `taskkill /F /T /PID <lock_pid>` (kill cả cây); hoặc kill mọi `pythonw` match `cli.main` trước khi start. (b) Tìm & loại nguồn spawn child nếu không cố ý.
-- **Mức độ**: trung bình — không sai kết quả (lock đảm bảo 1 scheduler) nhưng gây process rác + nghi ngờ rate-limit.
+### ~~Bot chạy 2 process → `bot-stop` để lại orphan~~ ✅ Fixed 2026-08-20
+- `bot-stop.bat`: `taskkill /F` → `taskkill /F /T` (kill cả cây: parent + child giữ lock + cây browser của cycle batdongsan), rồi quét thêm bằng PowerShell các `pythonw.exe` còn khớp `cli.main` từ lần start/stop trước.
+- Dùng PowerShell cho phần quét thay vì `wmic`/`for /f` — CommandLine chứa dấu phẩy nên parse CSV sai.
+- **Verify**: chạy thật → `[OK] Bot (PID 8872) da dung.` + `[OK] Khong con process mo coi.`; kiểm tra độc lập sau đó: 0 process còn lại, lock đã xoá.
+- **Chưa rõ (giữ lại)**: vì sao `cli.main start` đẻ process con — chưa trace ra nguồn. Lock vẫn đảm bảo chỉ 1 scheduler chạy nên không sai kết quả.
 
 ### `.bat` in ra `'M' is not recognized as an internal or external command`
 - **Operator thấy gì**: Chạy `bot-stop.bat` / `bot-start-headless.bat` thấy 2 dòng lỗi `'M' is not recognized` ở đầu output (bot vẫn chạy/dừng đúng).
