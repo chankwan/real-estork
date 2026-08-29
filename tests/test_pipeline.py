@@ -885,3 +885,101 @@ class TestCycleKhongTrungNguon:
                 assert nguon in _NHATOT_CYCLE_EXCLUDE, (
                     f"{nguon} vừa có '{job}' vừa bị cycle nhatot lấy → xử lý 2 lần"
                 )
+
+
+class TestBaoDongLoiChungChi:
+    """Bot không được treo câm nữa khi bắt tay TLS hỏng.
+
+    Sự cố 26-27/08: giờ máy chậm 3 ngày → chứng chỉ bị coi là 'chưa có hiệu lực'
+    → mọi HTTPS chết. Bot xếp lỗi này vào nhóm 'chưa có mạng' rồi thử lại mỗi 30s
+    trong im lặng 319 lần. Telegram cũng đi qua HTTPS nên chuông báo cũng câm.
+    """
+
+    def test_phan_biet_loi_chung_chi_voi_loi_mat_mang(self):
+        from orchestrator.agent import _is_cert_error
+        # đúng chuỗi lỗi thật đã ghi trong log sự cố
+        assert _is_cert_error(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+            "certificate is not yet valid (_ssl.c:1032)"
+        )
+        assert _is_cert_error("SSLCertVerificationError: certificate has expired")
+        # lỗi mạng thật thì KHÔNG được nhận nhầm
+        assert not _is_cert_error("[Errno 11001] getaddrinfo failed")
+        assert not _is_cert_error("[WinError 10060] A connection attempt failed")
+        assert not _is_cert_error("new row violates row-level security policy")
+
+    def test_hoi_gio_chuan_khong_di_qua_https(self):
+        """Chẩn đoán phải dùng NTP (UDP) — nếu đi qua HTTPS thì lúc cần nhất lại hỏng."""
+        import inspect
+        from orchestrator.agent import _ntp_offset_seconds
+        from orchestrator.agent import _ntp_offset_one, _NTP_SERVERS
+        src = inspect.getsource(_ntp_offset_one)
+        assert "SOCK_DGRAM" in src and "123" in src, "phải là UDP tới cổng NTP"
+        assert len(_NTP_SERVERS) >= 3, "1 máy chủ NTP rớt gói là chẩn đoán sai — cần dự phòng"
+        src += inspect.getsource(_ntp_offset_seconds)
+        # không được đụng bất kỳ client HTTP nào — chúng đều đi qua TLS
+        for lib in ("httpx", "requests", "urllib"):
+            assert lib not in src, f"{lib} đi qua TLS, lúc cần chẩn đoán thì chính nó cũng hỏng"
+
+    def test_ntp_hong_thi_tra_none_chu_khong_no(self):
+        from orchestrator.agent import _ntp_offset_seconds
+        assert _ntp_offset_seconds(server="khong-ton-tai.invalid", timeout=0.2) is None
+
+    def test_chuong_keu_khi_ghi_hong_lien_tiep(self):
+        import asyncio
+        from orchestrator.agent import RealEstorkAgent, _WRITE_FAIL_ALARM_STREAK
+
+        o = RealEstorkAgent.__new__(RealEstorkAgent)
+        o._write_alarm_at = None
+        o.db = type("D", (), {"write_error_streak": 0, "last_write_error": ""})()
+        keu: list[tuple[str, str]] = []
+        async def fake_alarm(t, d): keu.append((t, d))
+        o._raise_alarm = fake_alarm
+        o._clear_alarm = lambda: None
+        o.telegram = type("T", (), {"send_lifecycle": lambda self, x: None})()
+
+        # dưới ngưỡng → im lặng
+        o.db.write_error_streak = _WRITE_FAIL_ALARM_STREAK - 1
+        asyncio.run(o.check_write_health())
+        assert keu == []
+
+        # chạm ngưỡng → kêu
+        o.db.write_error_streak = _WRITE_FAIL_ALARM_STREAK
+        o.db.last_write_error = "ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED]"
+        o._diagnose_tls_failure = lambda: "GIỜ MÁY SAI"
+        asyncio.run(o.check_write_health())
+        assert len(keu) == 1
+        assert "GIỜ MÁY SAI" in keu[0][1], "lỗi chứng chỉ phải kèm chẩn đoán"
+
+        # còn hỏng nhưng chưa tới hạn nhắc lại → không spam
+        asyncio.run(o.check_write_health())
+        assert len(keu) == 1
+
+    def test_ghi_lai_duoc_thi_go_co_bao_dong(self):
+        import asyncio
+        from orchestrator.agent import RealEstorkAgent
+
+        o = RealEstorkAgent.__new__(RealEstorkAgent)
+        o._write_alarm_at = 12345.0          # đang trong đợt báo động
+        o.db = type("D", (), {"write_error_streak": 0, "last_write_error": ""})()
+        da_go = []
+        o._clear_alarm = lambda: da_go.append(True)
+        class _T:
+            async def send_lifecycle(self, x): pass
+        o.telegram = _T()
+
+        asyncio.run(o.check_write_health())
+        assert da_go == [True], "hết lỗi thì phải gỡ cờ báo động"
+        assert o._write_alarm_at is None
+
+    def test_db_dem_so_lan_ghi_hong_lien_tiep(self):
+        from db.client import SupabaseDB
+        db = SupabaseDB.__new__(SupabaseDB)
+        db.write_error_streak = 0
+        db.last_write_error = ""
+        db._note_write_error(RuntimeError("boom"))
+        db._note_write_error(RuntimeError("boom"))
+        assert db.write_error_streak == 2
+        assert "boom" in db.last_write_error
+        db._note_write_ok()
+        assert db.write_error_streak == 0 and db.last_write_error == ""

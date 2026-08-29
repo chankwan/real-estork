@@ -35,7 +35,20 @@ class SupabaseDB:
 
     def __init__(self) -> None:
         self.client = _get_client()
+        # Đếm số lần ghi hỏng LIÊN TIẾP. Sự cố 26-27/08: mọi lệnh ghi fail suốt
+        # 16,5 giờ vì lỗi chứng chỉ, bot vẫn chạy bình thường và không ai biết.
+        # Con số này để watchdog phát hiện "bot còn sống nhưng không ghi được gì".
+        self.write_error_streak = 0
+        self.last_write_error = ""
         logger.info("[db] Supabase client initialized")
+
+    def _note_write_ok(self) -> None:
+        self.write_error_streak = 0
+        self.last_write_error = ""
+
+    def _note_write_error(self, e: Exception) -> None:
+        self.write_error_streak += 1
+        self.last_write_error = f"{type(e).__name__}: {e}"
 
     # =========================================================
     # LISTINGS
@@ -52,9 +65,11 @@ class SupabaseDB:
                 .upsert(listing_data, on_conflict="source,source_id")
                 .execute()
             )
+            self._note_write_ok()
             if result.data:
                 return result.data[0]
         except Exception as e:
+            self._note_write_error(e)
             logger.error(f"[db] upsert_listing error: {e}")
         return None
 

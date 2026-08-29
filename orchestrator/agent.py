@@ -13,6 +13,7 @@ import os
 import time
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -81,6 +82,71 @@ _REASON_LABELS = {
 # Số lần thử đọc số tin đăng của người bán (batdongsan) trước khi bỏ cuộc.
 # 1 lần lúc crawl + 2 lần thử lại ở 2 cycle sau (~20 phút/cycle).
 _BDS_MAX_VERIFY_ATTEMPTS = 3
+
+# Lỗi CHỨNG CHỈ khác lỗi mạng: mạng vẫn thông, nhưng bắt tay TLS bị từ chối.
+# Retry không giúp — phải có người sửa (thường là sai giờ máy). Session 20/21 gộp
+# nó vào nhóm "chưa có mạng" nên bot thử lại vô hạn trong im lặng 16,5 giờ.
+_CERT_ERROR_MARKERS = (
+    "certificate_verify_failed",
+    "certificate verify failed",
+    "certificate is not yet valid",
+    "certificate has expired",
+    "ssl: ",
+    "sslcertverificationerror",
+)
+
+# Ghi hỏng liên tiếp bao nhiêu lần thì coi là "bot sống nhưng câm" và báo động.
+_WRITE_FAIL_ALARM_STREAK = 20
+# Không lặp lại báo động sớm hơn khoảng này (giây) để khỏi spam khi sự cố kéo dài.
+_ALARM_REPEAT_SECONDS = 3600
+# File cắm cờ khi bot cần người xem — kênh báo động DUY NHẤT không cần mạng.
+_ALARM_FILE = Path("BOT-CAN-NGUOI-XEM.txt")
+
+
+def _is_cert_error(err_msg: str) -> bool:
+    """Lỗi bắt tay TLS/chứng chỉ? (khác hẳn 'chưa có mạng')."""
+    low = err_msg.lower()
+    return any(m in low for m in _CERT_ERROR_MARKERS)
+
+
+# Hỏi nhiều máy chủ giờ: đo thực tế thấy pool.ntp.org rớt gói ngay lần gọi đầu
+# rồi lần sau mới trả lời. Chỉ hỏi một nơi thì đúng lúc cần chẩn đoán nhất bot
+# lại kết luận nhầm thành "mất mạng thật".
+_NTP_SERVERS = ("pool.ntp.org", "time.google.com", "time.windows.com", "time.cloudflare.com")
+
+
+def _ntp_offset_one(server: str, timeout: float) -> float | None:
+    import socket
+    import struct
+
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        sock.sendto(b"\x1b" + 47 * b"\0", (server, 123))
+        data, _ = sock.recvfrom(1024)
+        # Trường Transmit Timestamp = word thứ 11, tính từ mốc 1900 → đổi sang epoch
+        ntp_time = struct.unpack("!12I", data[:48])[10] - 2_208_988_800
+        return ntp_time - time.time()
+    except Exception:
+        return None
+    finally:
+        if sock is not None:
+            sock.close()
+
+
+def _ntp_offset_seconds(server: str | None = None, timeout: float = 3.0) -> float | None:
+    """Giờ máy lệch giờ chuẩn bao nhiêu giây (dương = máy chạy nhanh).
+
+    Hỏi qua NTP (UDP cổng 123) chứ KHÔNG qua HTTPS — nhờ vậy vẫn hỏi được đúng
+    lúc mọi kết nối HTTPS đang chết vì chứng chỉ. Trả None khi MỌI máy chủ đều
+    im lặng (lúc đó mới thật sự là mất mạng).
+    """
+    for host in ([server] if server else _NTP_SERVERS):
+        offset = _ntp_offset_one(host, timeout)
+        if offset is not None:
+            return offset
+    return None
 
 # Nguồn KHÔNG lấy trong cycle nhatot vì mỗi nguồn đã có cycle riêng.
 # Thiếu "facebook_groups" ở đây là lý do tin FB từng chạy pipeline 2 lần.
@@ -155,6 +221,8 @@ class RealEstorkAgent:
         # FB capture heartbeat: True = đang trong "đợt im lặng" đã báo Telegram
         # (chỉ báo 1 lần/đợt; hồi phục thì báo lại + reset).
         self._fb_capture_silent = False
+        # Lúc gần nhất kêu chuông "không ghi được DB" (None = đang bình thường).
+        self._write_alarm_at: float | None = None
         # Batdongsan: tin đã crawl nhưng chưa đọc được số tin đăng của người bán.
         # source_id → (listing, số lần đã thử). Cycle sau đọc lại trang chi tiết.
         # Cố ý KHÔNG lưu DB khi đang hoãn — bot restart thì tin quay lại như tin mới.
@@ -1072,6 +1140,93 @@ class RealEstorkAgent:
     # SCHEDULER
     # =========================================================
 
+    def _diagnose_tls_failure(self) -> str:
+        """Đoán vì sao bắt tay TLS hỏng. Ưu tiên nghi phạm số 1: giờ máy sai."""
+        offset = _ntp_offset_seconds()
+        if offset is None:
+            return (
+                "Không hỏi được giờ chuẩn (NTP cũng không thông) — nhiều khả năng "
+                "mất mạng thật, hoặc firewall chặn. Kiểm tra kết nối trước."
+            )
+        if abs(offset) > 300:
+            huong = "chậm" if offset > 0 else "nhanh"
+            return (
+                f"GIỜ MÁY SAI: đang {huong} {abs(offset) / 3600:.1f} giờ so với giờ chuẩn. "
+                f"Đây gần như chắc chắn là nguyên nhân — chứng chỉ của server bị coi là "
+                f"'chưa có hiệu lực' hoặc 'đã hết hạn'. Sửa: Settings → Time & language → "
+                f"Sync now. Nếu lặp lại sau mỗi lần mất điện thì pin CMOS hỏng."
+            )
+        return (
+            f"Giờ máy đúng (lệch {offset:+.0f}s) nên KHÔNG phải lỗi đồng hồ. "
+            f"Nghi phạm còn lại: phần mềm chặn/quét HTTPS (antivirus, proxy công ty), "
+            f"hoặc server thật sự đổi chứng chỉ hỏng."
+        )
+
+    async def _raise_alarm(self, tieu_de: str, chi_tiet: str) -> None:
+        """Báo động khi bot còn sống nhưng không làm được việc.
+
+        Ba kênh, kênh sau không phụ thuộc kênh trước:
+          1. Log ERROR (luôn được).
+          2. File cắm cờ ở thư mục dự án — kênh DUY NHẤT không cần mạng, đây là
+             thứ đã thiếu trong sự cố 16,5 giờ.
+          3. Telegram — thử dù biết có thể fail (Telegram cũng đi qua HTTPS).
+        """
+        logger.error(f"[orchestrator] 🚨 {tieu_de} | {chi_tiet}")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            _ALARM_FILE.write_text(
+                f"[{now}] {tieu_de}\n\n{chi_tiet}\n\n"
+                f"Bot vẫn đang chạy nhưng KHÔNG làm được việc. Xử lý xong thì xoá file này.\n",
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.error(f"[orchestrator] Không ghi được file báo động: {e}")
+        try:
+            await self.telegram.send_lifecycle(
+                f"🚨 <b>RealEstork — {tieu_de}</b>\n{chi_tiet}"
+            )
+        except Exception as e:
+            logger.error(f"[orchestrator] Telegram cũng không gửi được: {e}")
+
+    def _clear_alarm(self) -> None:
+        try:
+            if _ALARM_FILE.exists():
+                _ALARM_FILE.unlink()
+        except Exception:
+            pass
+
+    async def check_write_health(self) -> None:
+        """Bot còn sống nhưng có ghi được gì vào DB không?
+
+        Sự cố 26-27/08: bot chạy bình thường, log vẫn cuộn, nhưng MỌI lệnh ghi
+        fail vì lỗi chứng chỉ suốt 16,5 giờ — 0 tin lưu, 0 alert, không ai biết.
+        Chuông này bắt đúng trạng thái đó.
+        """
+        streak = getattr(self.db, "write_error_streak", 0)
+        if streak < _WRITE_FAIL_ALARM_STREAK:
+            if streak == 0 and self._write_alarm_at is not None:
+                self._write_alarm_at = None
+                self._clear_alarm()
+                logger.info("[orchestrator] ✅ Ghi DB đã hoạt động lại")
+                try:
+                    await self.telegram.send_lifecycle(
+                        "✅ <b>RealEstork — ghi dữ liệu đã hoạt động lại</b>"
+                    )
+                except Exception:
+                    pass
+            return
+
+        now = time.time()
+        if self._write_alarm_at and now - self._write_alarm_at < _ALARM_REPEAT_SECONDS:
+            return
+        self._write_alarm_at = now
+
+        loi = getattr(self.db, "last_write_error", "")
+        chi_tiet = f"{streak} lệnh ghi liên tiếp thất bại.\nLỗi: {loi[:200]}"
+        if _is_cert_error(loi):
+            chi_tiet += f"\n\nChẩn đoán: {self._diagnose_tls_failure()}"
+        await self._raise_alarm("BOT KHÔNG GHI ĐƯỢC DỮ LIỆU", chi_tiet)
+
     async def collect_feedback(self) -> None:
         """Đọc nút 👍/👎 dưới mỗi tin → ghi vào bảng phản hồi (vòng học).
 
@@ -1132,6 +1287,7 @@ class RealEstorkAgent:
             "analyze_classification_feedback": self.analyze_classification_feedback,
             "cleanup_old_phone_data": self.cleanup_old_phone_data,
             "collect_feedback": self.collect_feedback,
+            "check_write_health": self.check_write_health,
         }
 
         for job_name, job_config in schedules.items():
@@ -1248,12 +1404,34 @@ class RealEstorkAgent:
             try:
                 self.db.health_check_write()
                 logger.info("[orchestrator] ✅ DB smoke test passed (write OK)")
+                self._clear_alarm()
                 break
             except Exception as e:
                 err_msg = str(e)
                 is_network = isinstance(e, httpx.TransportError) or any(
                     m in err_msg.lower() for m in _NETWORK_ERROR_MARKERS
                 )
+                # Lỗi CHỨNG CHỈ: mạng thông nhưng TLS bị từ chối. Vẫn retry (để tự
+                # hồi phục ngay khi có người sửa giờ) NHƯNG phải kêu to, vì retry
+                # im lặng chính là thứ khiến bot chết 16,5 giờ mà không ai biết.
+                if _is_cert_error(err_msg):
+                    attempt += 1
+                    if attempt == 1 or attempt % 20 == 0:   # ngay lần đầu, rồi mỗi 10 phút
+                        await self._raise_alarm(
+                            "KHÔNG KHỞI ĐỘNG ĐƯỢC — LỖI CHỨNG CHỈ BẢO MẬT",
+                            f"Đã thử {attempt} lần, mỗi 30s.\n"
+                            f"Lỗi: {type(e).__name__}: {err_msg[:200]}\n\n"
+                            f"Chẩn đoán: {self._diagnose_tls_failure()}\n\n"
+                            f"Bot sẽ tự chạy tiếp ngay khi sửa xong, không cần khởi động lại.",
+                        )
+                    else:
+                        logger.error(
+                            f"[orchestrator] Lỗi chứng chỉ (lần thử {attempt}) — "
+                            f"đang chờ người sửa. Thử lại sau 30s..."
+                        )
+                    await asyncio.sleep(30)
+                    continue
+
                 if is_network:
                     attempt += 1
                     logger.warning(
