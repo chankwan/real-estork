@@ -245,6 +245,30 @@ class ClassificationPipeline:
             return {**default_filters, **source_filters}
         return default_filters
 
+    def non_rental_verdict(self, listing: Any) -> str:
+        """Tin này có phải tin cho thuê không? Đọc TIÊU ĐỀ, trả về:
+
+        ""      — bình thường, là tin cho thuê
+        "block" — sang nhượng / pass hợp đồng / bán / góp vốn → không gửi
+        "mixed" — vừa "cho thuê" vừa sang nhượng/hợp tác → vẫn gửi, kèm nhãn
+
+        Chỉ xét tiêu đề: mô tả dài hay nhắc "sang tên sổ", "bán hàng ăn" nên
+        quét cả mô tả sẽ chặn oan tin cho thuê thật.
+        """
+        source = getattr(listing, "source", None)
+        filters = self._alert_filters_for(source)
+        sources = filters.get("non_rental_sources", [])
+        if sources and source not in sources:
+            return ""
+        block_kw = filters.get("non_rental_block_keywords", [])
+        if not block_kw:
+            return ""
+        title = (getattr(listing, "title", "") or "").lower()
+        if not any(k in title for k in block_kw):
+            return ""
+        rent_kw = filters.get("non_rental_rent_keywords", [])
+        return "mixed" if any(k in title for k in rent_kw) else "block"
+
     def should_alert_wife(self, result: ClassificationResult, listing: Any) -> bool:
         """
         Determine if this listing should be immediately alerted to vợ.
@@ -254,6 +278,8 @@ class ClassificationPipeline:
         min_score = filters.get("wife_min_score", 55)
         max_age_hours = filters.get("wife_max_listing_age_hours", 48)
 
+        if self.non_rental_verdict(listing) == "block":
+            return False
         if result.score < min_score:
             return False
         if listing.listing_age_hours is not None and listing.listing_age_hours > max_age_hours:
@@ -296,6 +322,8 @@ class ClassificationPipeline:
         min_score = filters.get("wife_min_score", 55)
         max_age_hours = filters.get("wife_max_listing_age_hours", 48)
 
+        if self.non_rental_verdict(listing) == "block":
+            return "khong_phai_cho_thue"
         if result.score < min_score:
             return result.label  # "moi_gioi" or "can_xac_minh"
         if listing.listing_age_hours is not None and listing.listing_age_hours > max_age_hours:

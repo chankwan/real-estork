@@ -13,7 +13,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from loguru import logger
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 
 load_dotenv()
@@ -26,12 +26,43 @@ TELEGRAM_SCORE_BADGES = {
 }
 
 
+_FEEDBACK_PREFIX = "fb"
+
+
+def _feedback_keyboard(
+    listing_id: str | None,
+    good_count: int = 0,
+    bad_count: int = 0,
+) -> InlineKeyboardMarkup | None:
+    """2 nút 👍/👎 dưới mỗi tin. Không có listing_id thì không gắn nút.
+
+    Hiện SỐ PHIẾU chứ không phải dấu ✅ của một người: nhiều người cùng đánh giá
+    (vợ + đồng nghiệp), mà một tin nhắn Telegram chỉ có MỘT bộ nút chung — không
+    thể hiện riêng lựa chọn của từng người được. Đếm phiếu thì ai cũng đọc được.
+
+    Cả hai nút luôn còn nguyên → bấm nhầm bấm lại là đổi được phiếu của mình.
+
+    callback_data giới hạn 64 byte của Telegram: "fb|1|<uuid 36 ký tự>" = 41 byte.
+    """
+    if not listing_id:
+        return None
+    good = f"👍 Đáng xem ({good_count})" if good_count else "👍 Đáng xem"
+    bad = f"👎 Tin rác ({bad_count})" if bad_count else "👎 Tin rác"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(good, callback_data=f"{_FEEDBACK_PREFIX}|1|{listing_id}"),
+        InlineKeyboardButton(bad, callback_data=f"{_FEEDBACK_PREFIX}|0|{listing_id}"),
+    ]])
+
+
 class TelegramNotifier:
     """Send Telegram messages to product subscribers."""
 
     def __init__(self) -> None:
         self.token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         self.bot = Bot(token=self.token) if self.token else None
+        # Vị trí đã đọc tới trong hàng cập nhật của Telegram (nút 👍/👎).
+        # None = lần đầu. Telegram tự xoá update đã xác nhận nên restart không đọc lại.
+        self._feedback_offset: int | None = None
 
         if not self.bot:
             logger.warning(
@@ -80,6 +111,74 @@ class TelegramNotifier:
                 logger.error(f"[telegram] send_review to group topic {topic} error: {e}")
         await self.send_admin(text)
 
+    async def poll_feedback(self, save_fn: Any) -> int:
+        """Đọc các lần bấm 👍/👎 rồi giao cho save_fn lưu lại.
+
+        save_fn(listing_id: str, is_good: bool, voter_id: str)
+            -> (số phiếu đáng xem, số phiếu rác) nếu lưu được, None nếu hỏng
+
+        Dùng get_updates thay vì chạy Application/webhook: bot này chỉ cần đọc
+        nút bấm, không cần xử lý lệnh chat. Gọi định kỳ từ scheduler.
+        Trả về số phản hồi đã ghi nhận.
+        """
+        if not self.is_configured:
+            return 0
+        try:
+            updates = await self.bot.get_updates(
+                offset=self._feedback_offset,
+                timeout=0,
+                allowed_updates=["callback_query"],
+            )
+        except TelegramError as e:
+            logger.warning(f"[telegram] poll_feedback error: {e}")
+            return 0
+
+        saved = 0
+        for u in updates:
+            self._feedback_offset = u.update_id + 1
+            q = getattr(u, "callback_query", None)
+            data = getattr(q, "data", "") or ""
+            if not q or not data.startswith(f"{_FEEDBACK_PREFIX}|"):
+                continue
+            try:
+                _, flag, listing_id = data.split("|", 2)
+            except ValueError:
+                # Payload lạ (vd nút cũ từ phiên bản trước) — vẫn phải trả lời,
+                # nếu không Telegram quay vòng vòng trên máy người bấm.
+                try:
+                    await q.answer("Nút này không còn dùng")
+                except TelegramError:
+                    pass
+                continue
+            is_good = flag == "1"
+            voter = getattr(q, "from_user", None)
+            voter_id = str(getattr(voter, "id", "") or "")
+            counts = None
+            try:
+                counts = save_fn(listing_id, is_good, voter_id)
+            except Exception as e:
+                logger.error(f"[telegram] save feedback error: {type(e).__name__}: {e}")
+            ok = counts is not None
+            try:
+                await q.answer("Đã ghi nhận, cảm ơn!" if ok else "Chưa lưu được, thử lại sau")
+                if ok:
+                    # Giữ CẢ HAI nút + hiện số phiếu → người sau bấm được, người
+                    # bấm nhầm sửa được.
+                    g, b = counts
+                    await q.edit_message_reply_markup(
+                        reply_markup=_feedback_keyboard(listing_id, good_count=g, bad_count=b)
+                    )
+            except TelegramError as e:
+                # "message is not modified" khi bấm lại đúng nút cũ — vô hại.
+                if "not modified" not in str(e).lower():
+                    logger.warning(f"[telegram] answer callback error: {e}")
+            if ok:
+                saved += 1
+                logger.info(
+                    f"[telegram] Phản hồi: {listing_id} → {'đáng xem' if is_good else 'tin rác'}"
+                )
+        return saved
+
     async def send_lifecycle(self, text: str) -> None:
         """Send bot lifecycle event (start/stop/crash) to admin + group General topic."""
         if not self.is_configured:
@@ -107,13 +206,15 @@ class TelegramNotifier:
         osint: dict | None = None,
         message_thread_id: int | None = None,
         intent: str | None = None,
+        notice: str | None = None,
+        listing_id: str | None = None,
         dry_run: bool = False,
     ) -> bool:
         """Send property alert to a specific Telegram chat/channel."""
         if not self.is_configured:
             return False
 
-        message = self._format_listing_message(listing, result, osint, intent)
+        message = self._format_listing_message(listing, result, osint, intent, notice)
 
         if dry_run:
             logger.info(f"[telegram][DRY_RUN] Would send to {chat_id} (topic {message_thread_id}):\n{message}")
@@ -127,6 +228,7 @@ class TelegramNotifier:
                  text=message,
                  parse_mode="HTML",
                  disable_web_page_preview=False,
+                 reply_markup=_feedback_keyboard(listing_id),
              )
              logger.info(f"[telegram] Message sent to chat {chat_id} (topic {message_thread_id})")
              return True
@@ -140,6 +242,7 @@ class TelegramNotifier:
         result: Any,
         osint: dict | None,
         intent: str | None = None,
+        notice: str | None = None,
     ) -> str:
         """Format the listing alert in HTML for Telegram."""
         e = html.escape  # All user-provided text must be escaped for strict HTML parsers
@@ -203,6 +306,8 @@ class TelegramNotifier:
         lines: list[str] = [
             f"<b>{badge} {label_text} (Score: {result.score})</b>",
         ]
+        if notice:
+            lines.append(f"⚠️ <b>{e(notice)}</b>")
         if prop_label:
             lines.append(f"{prop_emoji} <b>{prop_label}</b>")
         lines.append("")

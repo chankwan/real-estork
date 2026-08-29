@@ -44,6 +44,49 @@ alert_filters:
     "Tân Phú": 40000000
     "Bình Tân": 40000000
 
+  # ===================================================
+  # TIN KHÔNG PHẢI CHO THUÊ (session 23)
+  # Sang nhượng / pass hợp đồng / bán / góp vốn — không phải mặt bằng để đi thuê.
+  # Đo 1200 tin portal: 39 tin loại này, 8 tin đã gửi (2,8% alert), score 58-100.
+  # Chỉ xét TIÊU ĐỀ — mô tả dài hay nhắc "sang tên", "bán hàng" gây dính oan.
+  # ===================================================
+  non_rental_sources:                # user quyết bật cho cả Facebook (28/08)
+    - "nhatot"
+    - "muaban"
+    - "batdongsan"
+    - "facebook_groups"
+  non_rental_block_keywords:         # tiêu đề có 1 trong các cụm này = không phải tin thuê
+    - "sang nhượng"
+    - "sang quán"
+    - "sang tiệm"
+    - "sang shop"
+    - "sang mặt bằng"
+    - "sang lại"
+    - "sang gấp"
+    - "sang nhanh"
+    - "giá sang"
+    - "cần sang"
+    - "bao sang"
+    - "sang được ngay"
+    - "pass hợp đồng"
+    - "pass lại"
+    - "pass gấp"
+    - "nhượng lại"
+    - "chuyển nhượng"
+    - "bán nhà"
+    - "bán đất"
+    - "bán căn hộ"
+    - "cần bán"
+    - "bán gấp"
+    - "góp vốn"
+    - "hợp tác kinh doanh"
+    - "hợp tác đầu tư"
+    - "hợp tác khai thác"
+    - "tìm đối tác"
+  non_rental_rent_keywords:          # có thêm cụm này = tin nước đôi → vẫn gửi, kèm nhãn
+    - "cho thuê"
+    - "cho thue"
+
 signals:
   # ===================================================
   # PHONE-BASED SIGNALS — TẠM TẮT
@@ -170,8 +213,16 @@ signals:
   # weight: +12 đã redistribute sang account_new_or_few_posts (+4), description_no_diacritics (+5), posted_outside_business_hours (+3)
 
   account_type_personal:
-    description: "Platform xác nhận tài khoản cá nhân (nhatot type=u) — strong chính chủ signal"
-    weight: +25
+    description: "Platform xác nhận tài khoản cá nhân (nhatot type=u)"
+    # TẮT session 23 (28/08). Đo 774 tin nhatot trong log: signal này fire ở
+    # ĐÚNG 100% tin — vì cả 2 URL nhatot đã lọc sẵn ?f=p (chỉ cá nhân). Cộng
+    # điểm cho thứ đúng với mọi tin = không mang thông tin, chỉ nâng điểm nền.
+    # Hậu quả: 50 nền + 25 + 14 (fire 82%) + 8 (fire 78%) = 97 điểm trước khi
+    # bot đọc nội dung → 42% tin chạm trần 100 → thang điểm mất khả năng phân
+    # biệt → vợ ngập tin. Bỏ signal này: tin chạm trần 209 → 0, trung vị 100 → 75.
+    # Session 19 đã kết luận "?f=p mới là source of truth, không phải signal này".
+    # BẬT LẠI nếu bỏ ?f=p khỏi URL nhatot — khi đó signal mới có ý nghĩa.
+    weight: 0
     check: "account_type == 'u'"
     sites: "nhatot (type field). Các site khác: None → không fire"
 

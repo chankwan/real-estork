@@ -396,8 +396,8 @@ class SupabaseDB:
         feedback_source: str,
         signals_at_prediction: dict,
         ai_model_used: str = "",
-    ) -> None:
-        """Save classification feedback for learning loop."""
+    ) -> bool:
+        """Save classification feedback for learning loop. True = ghi được."""
         try:
             self.client.table("classification_feedback").insert({
                 "listing_id": listing_id,
@@ -408,8 +408,56 @@ class SupabaseDB:
                 "signals_at_prediction": signals_at_prediction,
                 "ai_model_used": ai_model_used,
             }).execute()
+            return True
         except Exception as e:
             logger.error(f"[db] save_feedback error: {e}")
+            return False
+
+    def count_feedback(self, listing_id: str) -> tuple[int, int]:
+        """Đếm phiếu từ nút Telegram cho 1 tin → (đáng xem, rác).
+
+        Nhiều người cùng đánh giá 1 tin (vợ + đồng nghiệp), mỗi người 1 phiếu.
+        """
+        try:
+            result = (
+                self.client.table("classification_feedback")
+                .select("actual_label")
+                .eq("listing_id", listing_id)
+                .like("feedback_source", "telegram_button%")
+                .execute()
+            )
+            rows = result.data or []
+            good = sum(1 for x in rows if x.get("actual_label") == "chinh_chu")
+            return good, len(rows) - good
+        except Exception as e:
+            logger.error(f"[db] count_feedback error: {e}")
+            return 0, 0
+
+    def prune_feedback(self, listing_id: str, feedback_source: str) -> int:
+        """Mỗi người ĐÚNG 1 phiếu trên 1 tin: giữ phiếu mới nhất, xoá phần còn lại.
+
+        Gọi SAU khi ghi phiếu mới (không phải trước). Nếu xoá trước mà bước ghi
+        hỏng thì người bấm mất luôn phiếu cũ mà không biết.
+
+        feedback_source phải kèm định danh người bấm ("telegram_button:<id>"),
+        nếu không sẽ đụng vào phiếu của người khác trên cùng tin.
+        """
+        try:
+            result = (
+                self.client.table("classification_feedback")
+                .select("id")
+                .eq("listing_id", listing_id)
+                .eq("feedback_source", feedback_source)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            thua = [x["id"] for x in (result.data or [])[1:]]
+            for row_id in thua:
+                self.client.table("classification_feedback").delete().eq("id", row_id).execute()
+            return len(thua)
+        except Exception as e:
+            logger.error(f"[db] prune_feedback error: {e}")
+            return 0
 
     def get_recent_feedback(self, days: int = 7) -> list[dict]:
         """Get recent feedback rows for weekly analysis."""

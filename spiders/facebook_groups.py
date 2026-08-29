@@ -79,15 +79,67 @@ _SEEK_KW = [
 ]
 
 
-def detect_fb_intent(text: str) -> str:
+_FB_INTENT_CONFIG: dict[str, Any] | None = None
+
+
+def _intent_config() -> dict[str, Any]:
+    """Đọc config/fb_intent.yaml (cache). Thiếu file → dùng bộ từ khoá gốc trong code."""
+    global _FB_INTENT_CONFIG
+    if _FB_INTENT_CONFIG is None:
+        cfg: dict[str, Any] = {}
+        try:
+            import yaml
+            with open("config/fb_intent.yaml", encoding="utf-8") as f:
+                cfg = (yaml.safe_load(f) or {}).get("fb_intent", {}) or {}
+        except FileNotFoundError:
+            logger.warning("[facebook_groups] Không thấy config/fb_intent.yaml — dùng từ khoá mặc định")
+        except Exception as e:
+            logger.error(f"[facebook_groups] Lỗi đọc fb_intent.yaml: {type(e).__name__}: {e}")
+        cfg.setdefault("offer_strong", _OFFER_KW)
+        cfg.setdefault("offer_keywords", [])
+        cfg.setdefault("seek_keywords", _SEEK_KW)
+        cfg.setdefault("transfer_markers", [])
+        cfg.setdefault("structural", {})
+        _FB_INTENT_CONFIG = cfg
+    return _FB_INTENT_CONFIG
+
+
+def detect_fb_intent(
+    text: str,
+    price_vnd: int | None = None,
+    phone: str = "",
+) -> str:
     """Phân loại ý định post FB → 'offer' (chủ) / 'seek' (khách) / 'unknown'.
-    Luật ưu tiên (§10.5.2): có tín hiệu OFFER → offer (dù có 'cần').
-    Chỉ SEEK khi có seek-kw mà KHÔNG có offer-kw. Còn lại 'unknown' (không route)."""
+
+    Thứ tự xét (đổi thứ tự là sai kết quả — xem config/fb_intent.yaml):
+      1. seek-kw có mà offer_strong không có → seek. Phải xét TRƯỚC, vì bước 2
+         mở rộng từ khoá nên nếu để sau thì tin "cần thuê" sẽ bị hút vào offer.
+      2. offer_strong / offer_keywords → offer.
+      3. suy theo cấu trúc: có giá theo tháng + có SĐT → offer, TRỪ KHI thân bài
+         có dấu hiệu sang nhượng (lúc phải đoán thì không đoán liều).
+      4. còn lại → unknown (không route, không gửi).
+
+    Session 23: đo 400 tin FB thật → unknown 164 → 43, offer +118, seek +3,
+    0 tin bị đảo ngược sai.
+    """
+    cfg = _intent_config()
     t = (text or "").lower()
-    if any(k in t for k in _OFFER_KW):
-        return "offer"
-    if any(k in t for k in _SEEK_KW):
+
+    offer_strong = cfg.get("offer_strong") or []
+    has_offer_strong = any(k in t for k in offer_strong)
+    if not has_offer_strong and any(k in t for k in (cfg.get("seek_keywords") or [])):
         return "seek"
+    if has_offer_strong or any(k in t for k in (cfg.get("offer_keywords") or [])):
+        return "offer"
+
+    st = cfg.get("structural") or {}
+    if st.get("enabled", False):
+        if any(k in t for k in (cfg.get("transfer_markers") or [])):
+            return "unknown"
+        if (price_vnd if st.get("require_price", True) else True) and (
+            phone if st.get("require_phone", True) else True
+        ):
+            return "offer"
     return "unknown"
 
 

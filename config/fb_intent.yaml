@@ -1,0 +1,94 @@
+# RealEstork — Đoán ý định tin Facebook (session 23)
+#
+# Trả lời 1 câu hỏi: người này ĐANG CÓ nhà cho thuê (offer/Chủ), hay ĐANG ĐI TÌM
+# thuê (seek/Khách)? Không đoán được thì "chưa rõ" và KHÔNG gửi.
+#
+# Vì sao cần: đo 400 tin FB thật → 41% rớt "chưa rõ", đọc tay 18 tin thì 17 tin
+# là chủ nhà rao thật. Người bán trên FB phần lớn không viết "cho thuê" — họ viết
+# "18TRIỆU/THÁNG - NHÀ MỚI XÂY NGUYÊN CĂN" hoặc "12TR CÓ MẶT BẰNG KINH DOANH ĐẸP".
+#
+# THỨ TỰ XÉT (quan trọng — đổi thứ tự là sai kết quả):
+#   1. seek_keywords có, mà offer_strong không có  → Khách
+#   2. offer_strong hoặc offer_keywords có          → Chủ
+#   3. suy theo cấu trúc: có giá + có SĐT           → Chủ
+#      (trừ khi dính transfer_markers → giữ "chưa rõ")
+#   4. còn lại                                      → chưa rõ, không gửi
+#
+# Sửa file này rồi restart bot là có hiệu lực, không cần đụng code.
+
+fb_intent:
+  # Cụm khẳng định người đăng ĐANG CÓ nhà. Xét TRƯỚC seek: chủ nhà hay viết
+  # "cần cho thuê", "tìm khách thuê" — có chữ "cần"/"tìm" nhưng vẫn là Chủ.
+  offer_strong:
+    - "cho thuê"
+    - "cho thue"
+    - "khách thuê"
+    - "tìm khách"
+    - "cần khách"
+    - "tìm người thuê"
+
+  # Mở rộng — cách người bán FB thực sự viết (session 23).
+  # CHỈ thêm cụm mà người đi TÌM thuê không dùng. Ví dụ KHÔNG được thêm "nguyên
+  # căn" trần: người tìm cũng viết "e tìm nhà nguyên căn" → sẽ bị gán nhầm Chủ.
+  offer_keywords:
+    - "giá thuê"
+    - "giá cho thuê"
+    - "nhà nguyên căn"
+    - "mặt bằng kinh doanh"
+    - "mbkd"
+    - "còn trống"
+    - "đang trống"
+    - "vào ở ngay"
+    - "vào làm việc ngay"
+    - "dọn vào ở"
+
+  # Cụm của người ĐI TÌM thuê.
+  seek_keywords:
+    - "cần thuê"
+    - "can thue"
+    - "cần tìm thuê"
+    - "tìm thuê"
+    - "cần thuê nhà"
+    - "cần thuê mặt bằng"
+    - "cần thuê phòng"
+    - "cần tìm nhà"
+    - "cần tìm mặt bằng"
+    - "cần tìm phòng"
+    - "cần tìm chỗ"
+    - "cần mặt bằng"
+    - "cần 1 mặt bằng"
+    - "cần một mặt bằng"
+    - "cần nhà"
+    - "đang cần thuê"
+    - "đang tìm nhà"
+    - "đang tìm mặt bằng"
+    - "muốn thuê"
+    - "em tìm"
+    - "e tìm"
+    - "mình tìm"
+    - "tôi tìm"
+
+  # Dấu hiệu sang nhượng / pass hợp đồng nằm trong THÂN bài.
+  # Chỉ dùng để CHẶN bước suy theo cấu trúc — khi bot phải đoán thì không được
+  # đoán liều. Tin dạng "BÌNH THẠNH - THUÊ ... GIÁ SANG 1XX" có đủ giá + SĐT nên
+  # bước suy cấu trúc sẽ gán Chủ, trong khi thực chất là sang nhượng.
+  # (Lớp chặn "không phải tin cho thuê" chỉ đọc tiêu đề nên không bắt được tin này.)
+  transfer_markers:
+    - "sang nhượng"
+    - "sang lại"
+    - "sang gấp"
+    - "sang nhanh"
+    - "giá sang"
+    - "cần sang"
+    - "pass hợp đồng"
+    - "pass lại"
+    - "nhượng lại"
+    - "góp vốn"
+    - "hợp tác kinh doanh"
+
+  # Bước suy theo cấu trúc: tin có giá theo tháng VÀ số điện thoại thì gần như
+  # chắc chắn là tin rao cho thuê, kể cả khi không có chữ "thuê" nào.
+  structural:
+    enabled: true
+    require_price: true
+    require_phone: true

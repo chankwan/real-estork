@@ -19,7 +19,12 @@ alert_filters:
   wife_min_score: 40             # chỉ chặn broker (score < 40). can_xac_minh (>=40) vẫn gửi
   wife_max_listing_age_hours: 999999   # FB: KHÔNG loại theo tuổi tin (thường không parse được)
   wife_min_price_vnd: 0          # FB: KHÔNG lọc giá global (áp cả Chủ + Khách). Filter giá Chủ chuyển sang fb_offer_min_price_vnd (offer-only) — tin Khách nhận MỌI giá
-  fb_offer_min_price_vnd: 20000000   # CHỈ tin Chủ (offer): giá < 20M → bỏ (gia_thap). Không parse được giá → vẫn gửi (lọc lỏng). Đọc trong orchestrator routing, KHÔNG áp cho seek
+  # Nâng 20M → 40M (session 23, 28/08, user chốt). Lý do: mở recall ý định làm
+  # tin Chủ tăng từ 114 lên 155/400 tin (+36%) trong khi vợ đang quá tải tin.
+  # Đo trên 400 tin FB thật: ngưỡng 40M → 102 tin (78 tin cũ + 24 tin trước đây
+  # bị vứt oan) = ÍT hơn hiện nay 11%, đồng thời đổi tin giá thấp lấy tin chủ nhà
+  # thật. Facebook là nguồn ưu tiên thấp hơn marketplace nên siết chặt hơn.
+  fb_offer_min_price_vnd: 40000000   # CHỈ tin Chủ (offer): giá < 40M → bỏ (gia_thap). Không parse được giá → vẫn gửi (lọc lỏng). Đọc trong orchestrator routing, KHÔNG áp cho seek
   allow_missing_district: true   # FB nới: thiếu quận → vẫn gửi (chỉ reject khi parse ĐƯỢC quận & ngoài whitelist)
   product_min_score: 40
   wife_allowed_districts:        # parse được quận & ngoài list → mới reject "ngoai_quan"

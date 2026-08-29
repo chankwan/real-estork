@@ -378,3 +378,475 @@ class TestBdsPosterCountUnknown:
             listing = self._l(active)
             listing.source_id = source_id
             assert _bds_poster_count_unknown(listing) is True, source_id
+
+
+class TestNhatotPosterCountUnknown:
+    """Thiếu số tin đăng của người bán → phải hoá 999 (chưa biết), KHÔNG được là None.
+
+    Regression session 23: comment ở SignalContext.from_listing hứa 'fall back to
+    DB stats, then 999' nhưng bước 999 chưa bao giờ được cài. stats không có khoá
+    'poster_total_listings' → ctx nhận None → tín hiệu so None <= 2 ném TypeError,
+    classifier nuốt lỗi → tin chính chủ ít tin âm thầm mất +14 điểm.
+    """
+
+    def _ctx(self, spider_value, stats=None):
+        from pipeline.signals import SignalContext
+        listing = make_listing(source="nhatot", source_id="1")
+        listing.poster_total_listings = spider_value
+        return SignalContext.from_listing(listing, phone_stats=stats)
+
+    def test_thieu_so_thi_999_khong_phai_none(self):
+        ctx = self._ctx(None)
+        assert ctx.poster_total_listings == 999
+
+    def test_spider_doc_duoc_thi_giu_nguyen(self):
+        assert self._ctx(1).poster_total_listings == 1
+        assert self._ctx(8).poster_total_listings == 8
+
+    def test_zero_khong_bi_bien_thanh_999(self):
+        """live_ads=0 (tin đã hết hạn) là dữ liệu thật, không phải 'chưa biết'."""
+        assert self._ctx(0).poster_total_listings == 0
+
+    def test_db_stats_duoc_dung_khi_spider_khong_co(self):
+        assert self._ctx(None, stats={"poster_total_listings": 3}).poster_total_listings == 3
+
+    def test_tin_hieu_khong_nem_loi_khi_thieu_so(self):
+        from pipeline.signals import check_account_new_or_few_posts
+        assert check_account_new_or_few_posts(self._ctx(None)) is False
+
+    def test_tin_hieu_ban_dung_khi_co_so(self):
+        from pipeline.signals import check_account_new_or_few_posts
+        assert check_account_new_or_few_posts(self._ctx(1)) is True
+        assert check_account_new_or_few_posts(self._ctx(2)) is True
+        assert check_account_new_or_few_posts(self._ctx(3)) is False
+        assert check_account_new_or_few_posts(self._ctx(8)) is False
+
+    def test_guard_chiu_duoc_none_truc_tiep(self):
+        """Chốt chặn tại chỗ: dù ai đó nhét None vào ctx thì cũng không nổ."""
+        from pipeline.signals import check_account_new_or_few_posts
+        ctx = self._ctx(1)
+        ctx.poster_total_listings = None
+        assert check_account_new_or_few_posts(ctx) is False
+
+
+class TestNonRentalFilter:
+    """Tin sang nhượng / pass hợp đồng / bán / góp vốn không phải mặt bằng để thuê.
+
+    Session 23: đo 1200 tin portal → 40 tin loại này, 9 tin đã gửi cho vợ với
+    score 58-100 mang nhãn 'Likely Chính Chủ'.
+    """
+
+    def _c(self):
+        from pipeline.classifier import ClassificationPipeline
+        return ClassificationPipeline()
+
+    def _v(self, title, source="nhatot"):
+        return self._c().non_rental_verdict(make_listing(source=source, title=title))
+
+    def test_ban_nha_bi_chan(self):
+        assert self._v("Bán nhà 637/36/4 Tỉnh Lộ 10, P Bình Trị Đông B, Q. Bình Tân") == "block"
+
+    def test_sang_quan_bi_chan(self):
+        assert self._v("SANG GẤP CỬA HÀNG GỐM BÁT TRÀNG - VỊ TRÍ ĐẮC ĐỊA") == "block"
+        assert self._v("Sang quán cf góc 2 mặt tiền Hà Huy Giáp q12", "muaban") == "block"
+
+    def test_pass_hop_dong_bi_chan(self):
+        assert self._v("DO NHU CẦU MỞ RỘNG VĂN PHÒNG NÊN PASS HỢP ĐỒNG") == "block"
+
+    def test_nhuong_lai_hop_dong_thue_van_bi_chan(self):
+        """Bẫy: tiêu đề có chữ 'thuê' nhưng không có 'cho thuê' → vẫn là sang nhượng."""
+        assert self._v("Nhượng lại hợp đồng thuê nhà chung cư") == "block"
+
+    def test_tin_nuoc_doi_thi_gui_kem_nhan(self):
+        assert self._v("CHO THUÊ HOẶC HỢP TÁC KINH DOANH SPA MỚI ĐẦU TƯ – GÒ VẤP") == "mixed"
+        assert self._v("Cho thuê hoặc bán nhà MT số 19 ĐS 3, P9, Q.GV", "muaban") == "mixed"
+
+    def test_tin_cho_thue_binh_thuong_khong_dinh(self):
+        assert self._v("Cho thuê nhà mặt tiền Quận 3, 100m2") == ""
+        assert self._v("Chính chủ cho thuê mặt bằng kinh doanh Bình Thạnh") == ""
+
+    def test_khong_chan_oan_chu_ban_trong_mo_ta_nghe(self):
+        """'bán cà phê', 'bán hàng' là mô tả ngành nghề — không phải rao bán nhà."""
+        assert self._v("Cho thuê mặt bằng bán cà phê mang đi Quận 7") == ""
+        assert self._v("Mặt bằng tầng trệt phù hợp bán hàng online") == ""
+
+    def test_facebook_cung_bi_ap(self):
+        """Bật cho FB 28/08: đo 400 tin FB → 14 tin sang nhượng/bán, 0 tin oan.
+
+        Quan trọng cho việc #3 (mở recall ý định FB): lớp chặn này phải có TRƯỚC
+        khi nới từ khoá, nếu không sẽ đổi lỗi 'tin chủ bị vứt oan' lấy lỗi 'tin
+        bán/sang nhượng tràn vào'.
+        """
+        assert self._v("SANG NHƯỢNG NHÀ CHDV QUẬN 1", "facebook_groups") == "block"
+        assert self._v("Cần bán lô đất kdc mới", "facebook_groups") == "block"
+        assert self._v("Nhà nguyên căn cho thuê Gò Vấp 12tr", "facebook_groups") == ""
+
+    def test_skip_reason_va_alert_wife(self):
+        from pipeline.classifier import ClassificationResult
+        c = self._c()
+        listing = make_listing(source="nhatot", title="Nhượng lại hợp đồng thuê nhà chung cư",
+                               district="Quận 1", price_vnd_monthly=40_000_000)
+        listing.listing_age_hours = 1.0
+        r = ClassificationResult(score=100, label="chinh_chu", signals_fired={},
+                                 ai_probability=None, ai_reasoning="")
+        assert c.alert_skip_reason(r, listing) == "khong_phai_cho_thue"
+        assert c.should_alert_wife(r, listing) is False
+
+    def test_tin_nuoc_doi_van_qua_duoc_cong_alert(self):
+        from pipeline.classifier import ClassificationResult
+        c = self._c()
+        listing = make_listing(source="nhatot", title="CHO THUÊ HOẶC HỢP TÁC KINH DOANH SPA",
+                               district="Quận 1", price_vnd_monthly=40_000_000)
+        listing.listing_age_hours = 1.0
+        r = ClassificationResult(score=100, label="chinh_chu", signals_fired={},
+                                 ai_probability=None, ai_reasoning="")
+        assert c.alert_skip_reason(r, listing) == ""
+
+
+class TestFeedbackButtons:
+    """Nút 👍/👎 dưới mỗi tin Telegram — đầu vào duy nhất của vòng học.
+
+    Session 23: bảng phản hồi trống 0 dòng vì hàm ghi phản hồi chưa từng được
+    gọi ở đâu. Phần phân tích hàng tuần chạy vào bảng rỗng suốt từ đầu.
+    """
+
+    def test_khong_co_id_thi_khong_gan_nut(self):
+        from notifications.telegram import _feedback_keyboard
+        assert _feedback_keyboard(None) is None
+        assert _feedback_keyboard("") is None
+
+    def test_co_id_thi_ra_2_nut(self):
+        from notifications.telegram import _feedback_keyboard
+        kb = _feedback_keyboard("abc-123")
+        row = kb.inline_keyboard[0]
+        assert len(row) == 2
+        assert row[0].callback_data == "fb|1|abc-123"
+        assert row[1].callback_data == "fb|0|abc-123"
+
+    def test_bam_xong_van_con_du_2_nut_de_sua_neu_nham(self):
+        """Bấm nhầm 👍 phải đổi lại được 👎 — không được khoá cứng lựa chọn."""
+        from notifications.telegram import _feedback_keyboard
+        kb = _feedback_keyboard("abc-123", good_count=1, bad_count=0)
+        row = kb.inline_keyboard[0]
+        assert len(row) == 2, "mất nút = không sửa được lựa chọn"
+        # callback_data giữ nguyên → bấm nút kia là đổi phiếu của mình
+        assert row[0].callback_data == "fb|1|abc-123"
+        assert row[1].callback_data == "fb|0|abc-123"
+
+    def test_nut_hien_so_phieu_cho_nhieu_nguoi_cung_danh_gia(self):
+        """Vợ + đồng nghiệp cùng bấm 1 tin. Telegram chỉ có MỘT bộ nút chung nên
+        không đánh dấu riêng từng người được — hiện số phiếu để ai cũng đọc."""
+        from notifications.telegram import _feedback_keyboard
+        row = _feedback_keyboard("abc-123", good_count=2, bad_count=1).inline_keyboard[0]
+        assert "(2)" in row[0].text and "(1)" in row[1].text
+        # chưa ai bấm thì không hiện số 0 cho rối
+        row0 = _feedback_keyboard("abc-123").inline_keyboard[0]
+        assert "(" not in row0[0].text and "(" not in row0[1].text
+
+    def test_payload_la_van_duoc_tra_loi(self):
+        """Nút cũ từ phiên bản trước: không trả lời thì Telegram quay vòng vòng."""
+        import asyncio
+        from notifications.telegram import TelegramNotifier
+
+        class _Q:
+            def __init__(self, data):
+                self.data = data; self.from_user = None; self.answered = []
+            async def answer(self, text=None): self.answered.append(text)
+
+        class _U:
+            def __init__(self, uid, q): self.update_id = uid; self.callback_query = q
+
+        q = _Q("fb|seen")
+        n = TelegramNotifier.__new__(TelegramNotifier)
+        n.token = "x"; n._feedback_offset = None
+
+        class _Bot:
+            async def get_updates(self, **kw): return [_U(5, q)]
+        n.bot = _Bot()
+
+        assert asyncio.run(n.poll_feedback(lambda lid, good, voter="": (1, 0))) == 0
+        assert q.answered, "phải trả lời callback dù payload không hiểu được"
+
+    def test_callback_data_khong_vuot_gioi_han_64_byte(self):
+        """Telegram chặn callback_data > 64 byte — UUID 36 ký tự phải lọt."""
+        from notifications.telegram import _feedback_keyboard
+        kb = _feedback_keyboard("123e4567-e89b-12d3-a456-426614174000")
+        for btn in kb.inline_keyboard[0]:
+            assert len(btn.callback_data.encode("utf-8")) <= 64
+
+    def test_doc_nut_bam_va_luu_dung_nhan(self):
+        import asyncio
+        from notifications.telegram import TelegramNotifier
+
+        class _Q:
+            def __init__(self, data):
+                self.data = data; self.from_user = None; self.answered = []
+            async def answer(self, text=None): self.answered.append(text)
+            async def edit_message_reply_markup(self, reply_markup=None): pass
+
+        class _U:
+            def __init__(self, uid, q): self.update_id = uid; self.callback_query = q
+
+        n = TelegramNotifier.__new__(TelegramNotifier)
+        n.token = "x"; n._feedback_offset = None
+        ups = [_U(1, _Q("fb|1|listing-A")), _U(2, _Q("fb|0|listing-B")), _U(3, _Q("linh tinh"))]
+
+        class _Bot:
+            async def get_updates(self, **kw): return ups
+        n.bot = _Bot()
+
+        got = []
+        def save(lid, good, voter=""):
+            got.append((lid, good)); return (1, 0)
+
+        saved = asyncio.run(n.poll_feedback(save))
+        assert saved == 2
+        assert got == [("listing-A", True), ("listing-B", False)]
+        assert n._feedback_offset == 4        # đã xác nhận hết, restart không đọc lại
+
+    def test_luu_that_bai_thi_khong_dem_va_bao_nguoi_bam(self):
+        import asyncio
+        from notifications.telegram import TelegramNotifier
+
+        class _Q:
+            def __init__(self, data):
+                self.data = data; self.from_user = None; self.answered = []
+            async def answer(self, text=None): self.answered.append(text)
+            async def edit_message_reply_markup(self, reply_markup=None):
+                raise AssertionError("không được sửa nút khi lưu thất bại")
+
+        class _U:
+            def __init__(self, uid, q): self.update_id = uid; self.callback_query = q
+
+        q = _Q("fb|1|listing-A")
+        n = TelegramNotifier.__new__(TelegramNotifier)
+        n.token = "x"; n._feedback_offset = None
+
+        class _Bot:
+            async def get_updates(self, **kw): return [_U(9, q)]
+        n.bot = _Bot()
+
+        assert asyncio.run(n.poll_feedback(lambda lid, good, voter="": None)) == 0
+        assert q.answered and "Chưa lưu được" in q.answered[0]
+
+
+class TestFbIntentRecall:
+    """Đoán ý định tin Facebook — mở recall (session 23).
+
+    Đo 400 tin FB thật: 'chưa rõ' 164 → 43, Chủ +118, Khách +3, 0 tin đảo ngược sai.
+    Người bán FB phần lớn không viết "cho thuê" mà viết "18TRIỆU/THÁNG - NHÀ MỚI
+    XÂY NGUYÊN CĂN", nên chỉ dò chữ "cho thuê" là vứt oan ~20% tin chủ nhà.
+    """
+
+    def _i(self, text, price=None, phone=""):
+        from spiders.facebook_groups import detect_fb_intent
+        return detect_fb_intent(text, price_vnd=price, phone=phone)
+
+    def test_khach_tim_thue_van_la_khach_du_co_tu_khoa_chu(self):
+        """Bẫy thứ tự: 'nhà nguyên căn' nằm trong từ khoá Chủ, nhưng người TÌM
+        cũng viết vậy. Seek phải được xét TRƯỚC, nếu không sẽ gán nhầm."""
+        assert self._i("E tìm nhà nguyên căn quận Tân Phú, ngân sách 15tr") == "seek"
+        assert self._i("Mình tìm mặt bằng kinh doanh quận 3") == "seek"
+
+    def test_chu_nha_dung_tu_can_tim_van_la_chu(self):
+        """Chủ nhà hay viết 'cần cho thuê', 'tìm khách thuê' — có 'cần'/'tìm'."""
+        assert self._i("Chính chủ cần cho thuê nhà mặt tiền Q3") == "offer"
+        assert self._i("Nhà trống, đang tìm khách thuê lâu dài") == "offer"
+
+    def test_tu_khoa_mo_rong_bat_duoc_tin_chu_khong_co_chu_cho_thue(self):
+        assert self._i("12TR CÓ MẶT BẰNG KINH DOANH ĐẸP – LÊ ĐỨC THỌ") == "offer"
+        assert self._i("Biệt thự Thảo Điền. Giá thuê: 80tr/tháng") == "offer"
+        assert self._i("NHÀ NGUYÊN CĂN ĐƯỜNG NGUYỄN ĐÌNH CHIỂU, QUẬN 3") == "offer"
+
+    def test_tin_chu_khong_khop_tu_khoa_nao_van_duoc_cuu_boi_cau_truc(self):
+        """Tin thật: 'XÂY NGUYÊN CĂN' không khớp cụm 'nhà nguyên căn'. Lớp từ
+        khoá bó tay, nhưng có giá + SĐT nên bước suy cấu trúc kết luận đúng."""
+        txt = "18TRIỆU/THÁNG - NHÀ MỚI XÂY NGUYÊN CĂN ĐƯỜNG SỐ 2 / PHƯỜNG THỦ ĐỨC"
+        assert self._i(txt) == "unknown"
+        assert self._i(txt, price=18_000_000, phone="0901234567") == "offer"
+
+    def test_suy_theo_cau_truc_khi_khong_co_tu_khoa_nao(self):
+        """Có giá theo tháng + SĐT = tin rao cho thuê, dù không có chữ 'thuê'."""
+        txt = "127/ Lê Văn Duyệt P.3 Bình Thạnh 2.5x7 trệt 2 lầu 2pn 3wc"
+        assert self._i(txt, price=9_000_000, phone="0793344717") == "offer"
+
+    def test_thieu_gia_hoac_thieu_sdt_thi_khong_dam_ket_luan(self):
+        txt = "127/ Lê Văn Duyệt P.3 Bình Thạnh 2.5x7 trệt 2 lầu"
+        assert self._i(txt, price=9_000_000, phone="") == "unknown"
+        assert self._i(txt, price=None, phone="0793344717") == "unknown"
+
+    def test_khong_suy_lieu_khi_than_bai_co_dau_hieu_sang_nhuong(self):
+        """Tin thật đã lọt lưới: tiêu đề 'BÌNH THẠNH - THUÊ' nên lớp chặn (đọc
+        tiêu đề) không bắt được, mà lại đủ giá + SĐT nên suýt bị gán Chủ."""
+        txt = "BÌNH THẠNH - THUÊ\nLỜI\n- GIÁ SANG 1XX\n6P + 1MB + 6WC\nThuê 16.8tr"
+        assert self._i(txt, price=16_800_000, phone="0899907921") == "unknown"
+
+    def test_goi_kieu_cu_chi_1_tham_so_van_chay(self):
+        """Giữ tương thích: chỗ nào gọi kiểu cũ vẫn không vỡ."""
+        from spiders.facebook_groups import detect_fb_intent
+        assert detect_fb_intent("Chính chủ cho thuê nhà") == "offer"
+        assert detect_fb_intent("") == "unknown"
+
+    def test_tu_khoa_doc_tu_config(self):
+        from spiders.facebook_groups import _intent_config
+        cfg = _intent_config()
+        assert "cho thuê" in cfg["offer_strong"]
+        assert "giá thuê" in cfg["offer_keywords"]
+        assert "giá sang" in cfg["transfer_markers"]
+        assert cfg["structural"]["enabled"] is True
+
+
+class TestFeedbackNhieuNguoi:
+    """Vợ + 1 đồng nghiệp cùng đánh giá — mỗi người giữ 1 phiếu riêng.
+
+    Bẫy: nếu xoá phản hồi cũ theo tin (không theo người) thì người thứ hai bấm
+    sẽ xoá mất phiếu của người thứ nhất.
+    """
+
+    def test_moi_nguoi_mot_phieu_khong_dam_nhau(self):
+        import asyncio
+        from notifications.telegram import TelegramNotifier
+
+        class _Q:
+            def __init__(self, data, uid):
+                self.data = data; self.answered = []
+                self.from_user = type("U", (), {"id": uid})()
+            async def answer(self, text=None): self.answered.append(text)
+            async def edit_message_reply_markup(self, reply_markup=None): pass
+
+        class _U:
+            def __init__(self, uid, q): self.update_id = uid; self.callback_query = q
+
+        # kho phieu gia lap: {(tin, nguoi): danh gia}
+        kho: dict[tuple[str, str], bool] = {}
+        def save(lid, good, voter=""):
+            kho[(lid, voter)] = good           # ghi de phieu CUA MINH
+            g = sum(1 for (l, _), v in kho.items() if l == lid and v)
+            b = sum(1 for (l, _), v in kho.items() if l == lid and not v)
+            return (g, b)
+
+        n = TelegramNotifier.__new__(TelegramNotifier)
+        n.token = "x"; n._feedback_offset = None
+        ups = [
+            _U(1, _Q("fb|1|tin-A", 111)),   # vợ: đáng xem
+            _U(2, _Q("fb|0|tin-A", 222)),   # đồng nghiệp: rác
+        ]
+        class _Bot:
+            async def get_updates(self, **kw): return ups
+        n.bot = _Bot()
+
+        assert asyncio.run(n.poll_feedback(save)) == 2
+        assert kho == {("tin-A", "111"): True, ("tin-A", "222"): False}, \
+            "phiếu của người này không được ghi đè người kia"
+
+    def test_doi_y_chi_ghi_de_phieu_cua_chinh_minh(self):
+        import asyncio
+        from notifications.telegram import TelegramNotifier
+
+        class _Q:
+            def __init__(self, data, uid):
+                self.data = data; self.answered = []
+                self.from_user = type("U", (), {"id": uid})()
+            async def answer(self, text=None): self.answered.append(text)
+            async def edit_message_reply_markup(self, reply_markup=None): pass
+
+        class _U:
+            def __init__(self, uid, q): self.update_id = uid; self.callback_query = q
+
+        kho: dict[tuple[str, str], bool] = {}
+        def save(lid, good, voter=""):
+            kho[(lid, voter)] = good
+            g = sum(1 for (l, _), v in kho.items() if l == lid and v)
+            return (g, len([1 for (l, _), v in kho.items() if l == lid and not v]))
+
+        n = TelegramNotifier.__new__(TelegramNotifier)
+        n.token = "x"; n._feedback_offset = None
+        ups = [
+            _U(1, _Q("fb|1|tin-A", 111)),   # vợ bấm nhầm: đáng xem
+            _U(2, _Q("fb|0|tin-A", 222)),   # đồng nghiệp: rác
+            _U(3, _Q("fb|0|tin-A", 111)),   # vợ sửa lại: rác
+        ]
+        class _Bot:
+            async def get_updates(self, **kw): return ups
+        n.bot = _Bot()
+
+        asyncio.run(n.poll_feedback(save))
+        assert kho[("tin-A", "111")] is False, "sửa được phiếu của mình"
+        assert kho[("tin-A", "222")] is False, "phiếu người kia còn nguyên"
+        assert len(kho) == 2, "không đẻ thêm phiếu trùng"
+
+
+class TestMoiNguoiMotPhieu:
+    """Luật: mỗi người đúng 1 lượt vote trên 1 tin, và vote cho 1 kết quả."""
+
+    class _FakeDB:
+        """Bảng phản hồi giả lập — đủ để kiểm luật 1-người-1-phiếu."""
+        def __init__(self):
+            self.rows = []      # [{id, listing_id, actual_label, feedback_source}]
+            self._n = 0
+            self.save_fails = False
+
+        def get_listing_by_id(self, lid):
+            return {"id": lid, "classification_label": "chinh_chu", "classification_score": 77}
+
+        def save_feedback(self, **kw):
+            if self.save_fails:
+                return False
+            self._n += 1
+            self.rows.append({"id": self._n, **kw})
+            return True
+
+        def prune_feedback(self, listing_id, feedback_source):
+            mine = [r for r in self.rows
+                    if r["listing_id"] == listing_id and r["feedback_source"] == feedback_source]
+            for r in mine[:-1]:                     # giữ bản mới nhất
+                self.rows.remove(r)
+            return max(0, len(mine) - 1)
+
+        def count_feedback(self, listing_id):
+            mine = [r for r in self.rows if r["listing_id"] == listing_id]
+            g = sum(1 for r in mine if r["actual_label"] == "chinh_chu")
+            return g, len(mine) - g
+
+    def _saver(self, db):
+        """Bản sao logic _save trong orchestrator, chạy trên DB giả."""
+        def _save(listing_id, is_good, voter_id=""):
+            row = db.get_listing_by_id(listing_id)
+            if not row:
+                return None
+            source = f"telegram_button:{voter_id}" if voter_id else "telegram_button"
+            ok = db.save_feedback(
+                listing_id=row["id"], predicted_label=row["classification_label"],
+                predicted_score=row["classification_score"],
+                actual_label="chinh_chu" if is_good else "moi_gioi",
+                feedback_source=source, signals_at_prediction={},
+            )
+            if not ok:
+                return None
+            db.prune_feedback(row["id"], source)
+            return db.count_feedback(row["id"])
+        return _save
+
+    def test_bam_10_lan_van_chi_con_1_phieu(self):
+        db = self._FakeDB(); save = self._saver(db)
+        for i in range(10):
+            save("tin-A", i % 2 == 0, "111")
+        mine = [r for r in db.rows if r["feedback_source"] == "telegram_button:111"]
+        assert len(mine) == 1, "1 người phải chỉ còn đúng 1 phiếu"
+        assert mine[0]["actual_label"] == "moi_gioi"   # lần bấm cuối (i=9 → False)
+        assert db.count_feedback("tin-A") == (0, 1)
+
+    def test_hai_nguoi_hai_phieu(self):
+        db = self._FakeDB(); save = self._saver(db)
+        assert save("tin-A", True, "111") == (1, 0)
+        assert save("tin-A", False, "222") == (1, 1)
+        assert len(db.rows) == 2
+
+    def test_ghi_hong_thi_phieu_cu_con_nguyen(self):
+        """Ghi trước dọn sau: lưu hỏng thì không được mất phiếu đã có."""
+        db = self._FakeDB(); save = self._saver(db)
+        save("tin-A", True, "111")
+        db.save_fails = True
+        assert save("tin-A", False, "111") is None
+        mine = [r for r in db.rows if r["feedback_source"] == "telegram_button:111"]
+        assert len(mine) == 1 and mine[0]["actual_label"] == "chinh_chu"

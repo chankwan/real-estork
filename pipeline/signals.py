@@ -87,6 +87,16 @@ class SignalContext:
     ) -> "SignalContext":
         """Build SignalContext from a RawListing + optional phone stats."""
         stats = phone_stats or {}
+        # Số tin đăng của người bán: ưu tiên giá trị spider đọc được (vd
+        # seller_info.live_ads của nhatot) → DB stats → 999. Bước 999 là bắt buộc:
+        # thiếu số phải hoá thành "coi như nhiều tin" (signal không fire), KHÔNG
+        # được để None lọt vào ctx — mọi signal so sánh sẽ ném TypeError và bị
+        # classifier nuốt, tin chính chủ âm thầm mất điểm.
+        poster_total = getattr(listing, "poster_total_listings", None)
+        if poster_total is None:
+            poster_total = stats.get("poster_total_listings")
+        if poster_total is None:
+            poster_total = 999
         return cls(
             title=listing.title or "",
             description=listing.description or "",
@@ -100,13 +110,7 @@ class SignalContext:
             phone_count_max_single_platform=stats.get("max_single_platform", 0),
             phone_platform_count=stats.get("platform_count", 0),
             phone_is_known_broker=stats.get("is_known_broker", False),
-            # Prefer value extracted directly by spider (e.g. seller_info.live_ads from nhatot)
-            # Fall back to DB stats, then 999 (unknown = assume high = signal won't fire)
-            poster_total_listings=(
-                listing.poster_total_listings
-                if getattr(listing, "poster_total_listings", None) is not None
-                else stats.get("poster_total_listings")
-            ),
+            poster_total_listings=poster_total,
             poster_sold_listings=getattr(listing, "poster_sold_listings", None) or 0,
             account_type=getattr(listing, "account_type", None),
             contact_name=getattr(listing, "contact_name", None) or "",
@@ -185,6 +189,8 @@ def check_posted_outside_business_hours(ctx: SignalContext) -> bool:
     return ctx.posted_hour < 8 or ctx.posted_hour > 18 or ctx.is_weekend
 
 def check_account_new_or_few_posts(ctx: SignalContext) -> bool:
+    if ctx.poster_total_listings is None:
+        return False
     return ctx.poster_total_listings <= 2
 
 def check_seller_high_sold_count(ctx: SignalContext) -> bool:

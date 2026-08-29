@@ -40,3 +40,8 @@ schedules:
     cron: "0 20 * * *"           # 8:00 PM daily — analyze vợ's /mark feedback
     function: analyze_classification_feedback
     enabled: true
+
+  collect_feedback:
+    interval_minutes: 1          # Đọc nút 👍/👎 vợ bấm dưới mỗi tin Telegram.
+    function: collect_feedback   # Gọi nhẹ (get_updates), 1 phút để bấm xong thấy phản hồi ngay.
+    enabled: true

@@ -417,7 +417,13 @@ class RealEstorkAgent:
         fb_intent: str | None = None
         if listing.source == "facebook_groups":
             from spiders.facebook_groups import detect_fb_intent
-            fb_intent = detect_fb_intent(listing.description)
+            # Đọc cả tiêu đề (dòng đầu post) lẫn thân bài, và đưa thêm giá + SĐT
+            # đã parse để bước suy theo cấu trúc dùng được.
+            fb_intent = detect_fb_intent(
+                f"{listing.title or ''}\n{listing.description or ''}",
+                price_vnd=listing.price_vnd_monthly,
+                phone=listing.phone or "",
+            )
             chu = os.environ.get("TELEGRAM_FB_CHU_TOPIC_ID", "") or os.environ.get("TELEGRAM_FB_TOPIC_ID", "")
             khach = os.environ.get("TELEGRAM_FB_KHACH_TOPIC_ID", "")
             if fb_intent == "offer" and chu.isdigit():
@@ -441,6 +447,13 @@ class RealEstorkAgent:
                 )
                 return "intent_unclear"
 
+        # Tin nước đôi (vừa "cho thuê" vừa sang nhượng/hợp tác) — vẫn gửi nhưng
+        # cảnh báo ngay đầu tin nhắn. Loại rõ ràng KHÔNG phải cho thuê đã bị
+        # alert_skip_reason chặn ở trên.
+        notice: str | None = None
+        if self.classifier.non_rental_verdict(listing) == "mixed":
+            notice = "CÓ THỂ LÀ TIN SANG NHƯỢNG / HỢP TÁC — đọc kỹ trước khi đi xem"
+
         seen_chats: set[str] = set()
         chats_to_alert: list[str] = []
         for cid in [admin_id, group_id]:
@@ -460,6 +473,8 @@ class RealEstorkAgent:
                 osint=osint_result,
                 message_thread_id=target_thread,
                 intent=fb_intent,
+                notice=notice,
+                listing_id=listing_id,
                 dry_run=self.dry_run
             )
             if sent:
@@ -1050,6 +1065,52 @@ class RealEstorkAgent:
     # SCHEDULER
     # =========================================================
 
+    async def collect_feedback(self) -> None:
+        """Đọc nút 👍/👎 dưới mỗi tin → ghi vào bảng phản hồi (vòng học).
+
+        Đây là ĐẦU VÀO duy nhất của vòng học. Trước session 23 bảng này trống
+        vĩnh viễn: phần phân tích hàng tuần vẫn chạy nhưng không có dữ liệu nào
+        để phân tích, nên mọi lần siết trọng số đều là phỏng đoán.
+
+        Quy ước nhãn: 👍 → chinh_chu (tin đáng gửi), 👎 → moi_gioi (rác).
+        Đây là "tin này có đáng gửi không" theo mắt vợ, không phải phán quyết
+        pháp lý về danh tính người đăng — dùng để chỉnh ngưỡng, không dùng để
+        khẳng định ai là môi giới.
+        """
+        def _save(listing_id: str, is_good: bool, voter_id: str = "") -> tuple[int, int] | None:
+            """Ghi 1 phiếu. Trả về (số phiếu đáng xem, số phiếu rác) sau khi ghi."""
+            row = self.db.get_listing_by_id(listing_id)
+            if not row:
+                logger.warning(f"[orchestrator] Phản hồi cho tin không tìm thấy: {listing_id}")
+                return None
+            rid = row.get("id") or listing_id
+            # Định danh người bấm nằm trong feedback_source vì bảng không có cột
+            # riêng. Nhờ vậy vợ và đồng nghiệp mỗi người giữ 1 phiếu độc lập trên
+            # cùng một tin, và ai đổi ý thì chỉ ghi đè phiếu CỦA MÌNH.
+            source = f"telegram_button:{voter_id}" if voter_id else "telegram_button"
+            ok = self.db.save_feedback(
+                listing_id=rid,
+                predicted_label=row.get("classification_label") or "",
+                predicted_score=int(row.get("classification_score") or 0),
+                actual_label="chinh_chu" if is_good else "moi_gioi",
+                feedback_source=source,
+                signals_at_prediction={},
+            )
+            if not ok:
+                return None
+            # Ghi TRƯỚC, dọn SAU: mỗi người đúng 1 phiếu, và nếu ghi hỏng thì
+            # phiếu cũ của họ vẫn còn nguyên chứ không mất trắng.
+            self.db.prune_feedback(rid, source)
+            return self.db.count_feedback(rid)
+
+        try:
+            saved = await self.telegram.poll_feedback(_save)
+        except Exception as e:
+            logger.warning(f"[orchestrator] collect_feedback lỗi: {type(e).__name__}: {e}")
+            return
+        if saved:
+            logger.info(f"[orchestrator] 📝 Ghi nhận {saved} phản hồi từ Telegram")
+
     def setup_scheduler(self) -> None:
         """Configure APScheduler from config/schedule.yaml."""
         schedules = self._schedule_config.get("schedules", {})
@@ -1063,6 +1124,7 @@ class RealEstorkAgent:
             "weekly_model_comparison": self.weekly_model_comparison,
             "analyze_classification_feedback": self.analyze_classification_feedback,
             "cleanup_old_phone_data": self.cleanup_old_phone_data,
+            "collect_feedback": self.collect_feedback,
         }
 
         for job_name, job_config in schedules.items():
