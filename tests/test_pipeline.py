@@ -850,3 +850,38 @@ class TestMoiNguoiMotPhieu:
         assert save("tin-A", False, "111") is None
         mine = [r for r in db.rows if r["feedback_source"] == "telegram_button:111"]
         assert len(mine) == 1 and mine[0]["actual_label"] == "chinh_chu"
+
+
+class TestCycleKhongTrungNguon:
+    """Mỗi nguồn chỉ được xử lý bởi ĐÚNG một chu kỳ.
+
+    Session 23: chu kỳ "Nhatot" lấy mọi nguồn trừ batdongsan + muaban, nên
+    facebook_groups bị chạy pipeline 2 lần (cycle riêng 3 phút + cycle này
+    5 phút), và thống kê "Nhatot cycle done" lẫn số liệu Facebook.
+    """
+
+    def test_cycle_nhatot_khong_dung_vao_nguon_co_cycle_rieng(self):
+        from orchestrator.agent import _NHATOT_CYCLE_EXCLUDE
+        for nguon in ("batdongsan", "muaban", "facebook_groups"):
+            assert nguon in _NHATOT_CYCLE_EXCLUDE, f"{nguon} có cycle riêng, không được lấy lại"
+
+    def test_nhatot_van_nam_trong_cycle_cua_no(self):
+        from orchestrator.agent import _NHATOT_CYCLE_EXCLUDE
+        assert "nhatot" not in _NHATOT_CYCLE_EXCLUDE
+
+    def test_moi_nguon_co_dung_1_cycle_trong_lich_chay(self):
+        """Đối chiếu lịch chạy thật: không nguồn nào có 2 chu kỳ."""
+        import yaml
+        with open("config/schedule.yaml", encoding="utf-8") as f:
+            jobs = (yaml.safe_load(f) or {}).get("schedules", {})
+        from orchestrator.agent import _NHATOT_CYCLE_EXCLUDE
+        co_cycle_rieng = {
+            "batdongsan": "batdongsan_cycle",
+            "muaban": "muaban_cycle",
+            "facebook_groups": "facebook_groups_cycle",
+        }
+        for nguon, job in co_cycle_rieng.items():
+            if jobs.get(job, {}).get("enabled", True):
+                assert nguon in _NHATOT_CYCLE_EXCLUDE, (
+                    f"{nguon} vừa có '{job}' vừa bị cycle nhatot lấy → xử lý 2 lần"
+                )
