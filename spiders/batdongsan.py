@@ -542,7 +542,7 @@ class BatdongsanSpider(BaseSpider):
         # button (JS-rendered, may be absent).
         #
         # KHÔNG mặc định 1 khi cả hai đều trượt: "1 tin đăng" là bằng chứng chính chủ
-        # mạnh nhất của BDS (bds_owner_few +15 stack bds_owner_single +10 = +25), nên
+        # mạnh nhất của BDS (poster_single_listing +25), nên
         # đoán 1 lúc không đọc được = thưởng 25 điểm cho dữ liệu KHÔNG có. Audit
         # 2026-08-18: môi giới 101 và 709 tin lọt alert đúng vì đường này (nút "Xem
         # thêm N tin khác" do JS render, lúc kịp lúc không). None = chưa biết →

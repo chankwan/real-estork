@@ -22,7 +22,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from loguru import logger
 
-from auth.muaban_auth import MuabanAuthClient
 from db.client import SupabaseDB
 from notifications.zalo import ZaloNotifier
 from notifications.telegram import TelegramNotifier
@@ -216,7 +215,6 @@ class RealEstorkAgent:
         self.ai = AIGateway(ai_config)
         self.zalo = ZaloNotifier()
         self.telegram = TelegramNotifier()
-        self.muaban_auth = MuabanAuthClient()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Ho_Chi_Minh")
         # FB capture heartbeat: True = đang trong "đợt im lặng" đã báo Telegram
         # (chỉ báo 1 lần/đợt; hồi phục thì báo lại + reset).
@@ -242,7 +240,10 @@ class RealEstorkAgent:
 
         # Seed dedup from recent DB
         logger.info("[orchestrator] 🧠 Seeding dedup cache from DB...")
-        recent = self.db.get_recent_listings(limit=1000)
+        # 12000 ~ 2 tuần tin của cả 4 nguồn. Phải đủ rộng vì tin đã lưu DB nhưng
+        # CHƯA từng alert (vd toàn bộ tin muaban trước 2026-09-08) không được lớp
+        # "đã alert thì thôi" bảo vệ — cache mỏng là gửi lại hàng loạt.
+        recent = self.db.get_recent_listings(limit=12000)
         self.dedup.seed_from_db(recent)
 
         logger.info("[orchestrator] ✨ Ready.")
@@ -283,9 +284,6 @@ class RealEstorkAgent:
 
             raw_listings = await self.spider_engine.fetch_all(exclude=_NHATOT_CYCLE_EXCLUDE)
             logger.info(f"[orchestrator] Nhatot fetched {len(raw_listings)} raw listings")
-
-            # Check token/cookie expiry — notify once per day
-            await self._check_muaban_token()
 
             if not raw_listings:
                 return
@@ -1036,31 +1034,10 @@ class RealEstorkAgent:
         except Exception as e:
             logger.error(f"[orchestrator] heartbeat check lỗi: {type(e).__name__}: {e}")
 
-    async def _check_muaban_token(self) -> None:
-        """If muaban token expired, try headless refresh via saved profile."""
-        muaban_spider = next(
-            (s for s in self.spider_engine.spiders if s.name == "muaban"), None
-        )
-        if not muaban_spider or not getattr(muaban_spider, "token_expired", False):
-            return
-
-        logger.info("[orchestrator] Muaban session expired — attempting headless refresh...")
-        if self.dry_run:
-            return
-
-        success = await self.muaban_auth.refresh_session()
-        if success:
-            muaban_spider.token_expired = False
-            logger.info("[orchestrator] Muaban session refreshed successfully")
-        else:
-            logger.warning("[orchestrator] Muaban session refresh failed — profile may be expired")
-            await self.telegram.send_admin(
-                "⚠️ <b>RealEstork: Muaban session hết hạn</b>\n\n"
-                "Profile Google hết hạn hoặc không tìm thấy. Chạy lệnh sau để setup lại:\n"
-                "<code>python -m cli.main setup-muaban</code>"
-            )
-            # Reset flag to avoid spamming every cycle
-            muaban_spider.token_expired = False
+    # _check_muaban_token: XOÁ (2026-09-08). Chỉ chạy khi spider bật cờ
+    # token_expired, mà cờ đó do đường lấy SĐT qua cookie bật — đường này đã gỡ
+    # vì muaban dựng Cloudflare Turnstile ở nút "Hiện số" từ 21/08 và endpoint cũ
+    # trả 404. Không còn gì cần đăng nhập ở muaban.
 
     # =========================================================
     # DAILY DIGEST (8:00 AM)

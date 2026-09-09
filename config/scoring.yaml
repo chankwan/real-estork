@@ -232,10 +232,27 @@ signals:
     check: "account_type == 's'"
     sites: "nhatot (type field). Các site khác: None → không fire"
 
-  account_new_or_few_posts:
-    description: "Account mới / ít tin trên platform — likely chính chủ"
+  # ===================================================
+  # THANG CHUNG: "người này đang đăng bao nhiêu tin?"
+  # Cùng tên, cùng mốc trên MỌI nguồn (2026-09-08). Nguồn nào đọc được số thì
+  # chấm, nguồn nào không đọc được thì cả 3 signal im — không thưởng, không phạt.
+  # Nhatot lấy số từ seller_info.live_ads.
+  # ===================================================
+
+  poster_single_listing:
+    description: "Đúng 1 tin đang đăng — dấu hiệu chính chủ mạnh nhất"
     weight: +14
-    check: "poster_total_listings <= 2"
+    check: "poster_total_listings == 1"
+
+  poster_few_listings:
+    description: "2-5 tin — chủ có vài mặt bằng, vẫn thiên về chính chủ"
+    weight: +8
+    check: "2 <= poster_total_listings <= 5"
+
+  poster_many_listings:
+    description: "Trên 5 tin — môi giới. Lưới đỡ cho chốt chặn cùng ngưỡng ở orchestrator"
+    weight: -30
+    check: "poster_total_listings > 5"
 
   seller_high_sold_count:
     description: "Lịch sử >= 20 tin đã đăng — môi giới chuyên nghiệp (sold_ads từ seller_info)"
@@ -263,9 +280,13 @@ signals:
     weight: -15
     check: "listing_age_hours != None and listing_age_hours > 168"
 
+  # trangtrang_spam_penalty: TẮT (2026-09-08). Signal duy nhất còn dựa vào SĐT ở
+  # nhóm sàn rao vặt. Đo 18 ngày: nhatot 0/800 tin có SĐT, batdongsan 0/3510,
+  # muaban 0/1559 — cả 3 sàn đã che số hết, nên signal này không còn cơ hội fire.
+  # Facebook vẫn giữ nhóm signal SĐT vì người đăng tự gõ số vào bài (82% có số),
+  # không tốn công đi lấy. Xem config/scoring_facebook_groups.yaml.
   trangtrang_spam_penalty:
-    description: "SĐT có >= 5 báo cáo spam/scam trên trangtrang.com — môi giới hoặc lừa đảo"
-    weight: -25
+    weight: 0
 
   # ===================================================
   # FLOOR LEVEL SIGNALS [ADDED v2.1]

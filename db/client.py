@@ -93,19 +93,35 @@ class SupabaseDB:
             return 0
 
     def get_recent_listings(self, limit: int = 500) -> list[dict]:
-        """Get recent listings for dedup seeding."""
+        """Get recent listings for dedup seeding.
+
+        Phân trang bắt buộc: Supabase/PostgREST chặn ở 1000 dòng/lần gọi bất kể
+        .limit() lớn hơn — đo 2026-09-08: limit=1000/5000/10000 đều trả đúng 1000.
+        Nên trước đây bot chỉ nhớ 1000 tin gần nhất sau mỗi lần khởi động lại, mà
+        1000 tin ~ hơn một ngày (facebook chiếm phần lớn) → tin cũ của các sàn dễ
+        bị coi là mới và gửi lại. Vòng .range() dưới đây lấy đủ số thật sự cần.
+        """
+        PAGE = 1000
+        rows: list[dict] = []
         try:
-            result = (
-                self.client.table("listings")
-                .select("source, source_id, content_hash, phone, district, address_normalized, price_vnd_monthly")
-                .order("scraped_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-            return result.data or []
+            while len(rows) < limit:
+                start = len(rows)
+                end = min(start + PAGE, limit) - 1
+                result = (
+                    self.client.table("listings")
+                    .select("source, source_id, content_hash, phone, district, address_normalized, price_vnd_monthly")
+                    .order("scraped_at", desc=True)
+                    .range(start, end)
+                    .execute()
+                )
+                batch = result.data or []
+                rows.extend(batch)
+                if len(batch) < end - start + 1:
+                    break  # hết dữ liệu
+            return rows
         except Exception as e:
-            logger.error(f"[db] get_recent_listings error: {e}")
-            return []
+            logger.error(f"[db] get_recent_listings error: {type(e).__name__}: {e}")
+            return rows  # giữ phần đã lấy được còn hơn mất trắng
 
     def get_listing_by_id(self, listing_id: str) -> dict | None:
         """Get a single listing by UUID or source-source_id."""

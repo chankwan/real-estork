@@ -190,12 +190,29 @@ class TestClassificationPipeline:
         assert result.score < 50  # Should reduce below base_score
 
     def test_known_broker_phone_crushes_score(self):
-        listing = make_listing(phone="0901111111")
+        """SĐT đã biết là môi giới → dìm điểm. Chỉ còn Facebook dùng nhóm signal này.
+
+        3 sàn rao vặt đã che số hết (đo 18 ngày: nhatot 0/800, batdongsan 0/3510,
+        muaban 0/1559) nên nhóm signal SĐT tắt ở đó; Facebook giữ vì người đăng tự
+        gõ số vào bài (82% có số), không tốn công đi lấy.
+        """
+        listing = make_listing(source="facebook_groups", phone="0901111111")
         result = self.classifier.classify(
             listing,
             phone_stats={"is_known_broker": True, "total_listings": 50}
         )
         assert result.score < 40  # Known broker → moi_gioi
+
+    def test_sdt_moi_gioi_khong_con_cham_diem_o_san_rao_vat(self):
+        """Cùng dữ liệu đó ở nhatot → không còn signal SĐT nào fire."""
+        listing = make_listing(source="nhatot", phone="0901111111")
+        result = self.classifier.classify(
+            listing,
+            phone_stats={"is_known_broker": True, "total_listings": 50,
+                         "trangtrang_report_count": 9}
+        )
+        assert not any(s.startswith("phone_") or s == "trangtrang_spam_penalty"
+                       for s in result.signals_fired)
 
     def test_fresh_listing_bonus(self):
         from datetime import datetime, timezone
@@ -245,6 +262,25 @@ class TestDistrictNormalization:
     def setup_method(self):
         from pipeline.classifier import ClassificationPipeline
         self.classifier = ClassificationPipeline()
+
+    def test_dang_ghep_gach_ngang(self):
+        """Muaban 2026-09 đổi sang 'TP. Thủ Đức - Quận Thủ Đức' — 225/4000 tin gần
+        nhất dùng dạng này và đang bị loại oan vì không khớp whitelist."""
+        n = self.classifier._normalize_district
+        assert n("TP. Thủ Đức - Quận Thủ Đức") == "thu duc"
+        assert n("Phường Tân Quy - Quận 7") == "7"
+        assert n("TP. Thủ Đức - Quận 9") == "9"
+        # không có vế nào ghi rõ đơn vị → lấy vế cuối
+        assert n("Bình Thạnh - Bình Thạnh") == "binh thanh"
+        # dạng thường không có gạch ngang: giữ nguyên hành vi cũ
+        assert n("Quận Gò Vấp") == "go vap"
+        assert n("Thành phố Thủ Đức") == "thu duc"
+
+    def test_dang_ghep_van_loai_dung_huyen_ngoai_o(self):
+        """Sửa dạng ghép không được vô tình mở cửa cho huyện ngoại ô."""
+        n = self.classifier._normalize_district
+        assert n("TP. HCM - Huyện Hóc Môn") == "hoc mon"
+        assert n("Huyện Bình Chánh") == "binh chanh"
 
     def test_simple_district(self):
         norm = self.classifier._normalize_district
@@ -380,53 +416,113 @@ class TestBdsPosterCountUnknown:
             assert _bds_poster_count_unknown(listing) is True, source_id
 
 
-class TestNhatotPosterCountUnknown:
-    """Thiếu số tin đăng của người bán → phải hoá 999 (chưa biết), KHÔNG được là None.
+class TestPosterCountUnknown:
+    """Thiếu số tin đăng của người bán → mọi signal họ hàng phải IM.
 
-    Regression session 23: comment ở SignalContext.from_listing hứa 'fall back to
-    DB stats, then 999' nhưng bước 999 chưa bao giờ được cài. stats không có khoá
-    'poster_total_listings' → ctx nhận None → tín hiệu so None <= 2 ném TypeError,
-    classifier nuốt lỗi → tin chính chủ ít tin âm thầm mất +14 điểm.
+    Lịch sử 2 lần dính cùng một lỗi "thiếu dữ liệu bị hiểu thành kết luận":
+      - session 22 (batdongsan): fetch hỏng → không đọc được số → tin môi giới
+        lọt qua chốt chặn và được thưởng điểm từ trang rỗng.
+      - session 24 (muaban): sàn không hề công bố số tin đăng → giá trị mặc định
+        999 kích hoạt signal phạt môi giới, trừ 40 điểm cho 100% tin, 252 cycle
+        liên tiếp không gửi nổi 1 alert.
+    Nên: chưa biết = None, và None không bao giờ được cộng/trừ điểm.
     """
 
-    def _ctx(self, spider_value, stats=None):
+    def _ctx(self, spider_value, stats=None, source="nhatot"):
         from pipeline.signals import SignalContext
-        listing = make_listing(source="nhatot", source_id="1")
+        listing = make_listing(source=source, source_id="1")
         listing.poster_total_listings = spider_value
         return SignalContext.from_listing(listing, phone_stats=stats)
 
-    def test_thieu_so_thi_999_khong_phai_none(self):
-        ctx = self._ctx(None)
-        assert ctx.poster_total_listings == 999
+    def test_thieu_so_thi_giu_none_khong_doan_bua(self):
+        assert self._ctx(None).poster_total_listings is None
 
     def test_spider_doc_duoc_thi_giu_nguyen(self):
         assert self._ctx(1).poster_total_listings == 1
         assert self._ctx(8).poster_total_listings == 8
 
-    def test_zero_khong_bi_bien_thanh_999(self):
-        """live_ads=0 (tin đã hết hạn) là dữ liệu thật, không phải 'chưa biết'."""
-        assert self._ctx(0).poster_total_listings == 0
+    def test_zero_van_la_du_lieu_that(self):
+        """live_ads=0 (tin đã hết hạn) là số thật, không phải 'chưa biết'."""
+        ctx = self._ctx(0)
+        assert ctx.poster_total_listings == 0
+        from pipeline.signals import poster_count_known
+        assert poster_count_known(ctx) is True
 
     def test_db_stats_duoc_dung_khi_spider_khong_co(self):
         assert self._ctx(None, stats={"poster_total_listings": 3}).poster_total_listings == 3
 
-    def test_tin_hieu_khong_nem_loi_khi_thieu_so(self):
-        from pipeline.signals import check_account_new_or_few_posts
-        assert check_account_new_or_few_posts(self._ctx(None)) is False
+    def test_khong_biet_thi_ca_ba_signal_deu_im(self):
+        from pipeline.signals import (check_poster_single_listing,
+                                      check_poster_few_listings,
+                                      check_poster_many_listings)
+        ctx = self._ctx(None)
+        assert check_poster_single_listing(ctx) is False
+        assert check_poster_few_listings(ctx) is False
+        assert check_poster_many_listings(ctx) is False
 
-    def test_tin_hieu_ban_dung_khi_co_so(self):
-        from pipeline.signals import check_account_new_or_few_posts
-        assert check_account_new_or_few_posts(self._ctx(1)) is True
-        assert check_account_new_or_few_posts(self._ctx(2)) is True
-        assert check_account_new_or_few_posts(self._ctx(3)) is False
-        assert check_account_new_or_few_posts(self._ctx(8)) is False
+    def test_sentinel_am_cua_batdongsan_cung_la_chua_biet(self):
+        """-1 = 'đọc trang chi tiết thất bại', không phải 'ít tin nên là chính chủ'."""
+        from pipeline.signals import poster_count_known, check_poster_single_listing
+        ctx = self._ctx(-1, source="batdongsan")
+        assert poster_count_known(ctx) is False
+        assert check_poster_single_listing(ctx) is False
+
+    def test_cac_moc_khong_chong_nhau(self):
+        from pipeline.signals import (check_poster_single_listing,
+                                      check_poster_few_listings,
+                                      check_poster_many_listings)
+        fired = lambda n: (check_poster_single_listing(self._ctx(n)),
+                           check_poster_few_listings(self._ctx(n)),
+                           check_poster_many_listings(self._ctx(n)))
+        assert fired(1) == (True, False, False)
+        assert fired(2) == (False, True, False)
+        assert fired(5) == (False, True, False)
+        assert fired(6) == (False, False, True)
+        assert fired(190) == (False, False, True)
 
     def test_guard_chiu_duoc_none_truc_tiep(self):
         """Chốt chặn tại chỗ: dù ai đó nhét None vào ctx thì cũng không nổ."""
-        from pipeline.signals import check_account_new_or_few_posts
+        from pipeline.signals import check_poster_many_listings
         ctx = self._ctx(1)
         ctx.poster_total_listings = None
-        assert check_account_new_or_few_posts(ctx) is False
+        assert check_poster_many_listings(ctx) is False
+
+
+class TestMuabanKhongConTruDiemOan:
+    """Regression session 24 — chặn đúng kịch bản đã giết 252 cycle muaban."""
+
+    def setup_method(self):
+        from pipeline.classifier import ClassificationPipeline
+        self.classifier = ClassificationPipeline()
+
+    def _tin_muaban(self, **kw):
+        # muaban không bao giờ có số tin đăng người bán → luôn None
+        listing = make_listing(source="muaban", source_id="71212862", **kw)
+        listing.poster_total_listings = None
+        return listing
+
+    def test_khong_con_signal_phat_moi_gioi_tu_du_lieu_khong_co(self):
+        result = self.classifier.classify(self._tin_muaban())
+        assert "muaban_multi_active_listings" not in result.signals_fired
+        assert "poster_many_listings" not in result.signals_fired
+
+    def test_tin_sach_dat_nguong_gui(self):
+        """Tin muaban bình thường, mới đăng → phải vượt mốc gửi 55.
+
+        Trước fix: 50 nền − 40 (signal ma) + 10 (mới đăng) = 20 điểm, trần thực
+        đo được trong 8 ngày là 40 < ngưỡng → không đời nào gửi.
+        """
+        listing = self._tin_muaban(description="Cho thue mat bang 100m2 duong Phan Xich Long")
+        listing.listing_age_hours = 1.0
+        result = self.classifier.classify(listing)
+        assert result.score >= 55, result.signals_fired
+
+    def test_chot_chan_tai_khoan_rai_tin_van_hoat_dong(self):
+        """Bỏ signal ma không được làm mất lớp lọc môi giới còn lại."""
+        listing = self._tin_muaban()
+        listing.same_session_account_count = 9
+        result = self.classifier.classify(listing)
+        assert "same_session_multi_listing" in result.signals_fired
 
 
 class TestNonRentalFilter:

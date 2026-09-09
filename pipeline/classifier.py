@@ -198,6 +198,18 @@ class ClassificationPipeline:
         import re
         from unidecode import unidecode
 
+        # Dạng ghép "A - B" (muaban 2026-09: "TP. Thủ Đức - Quận Thủ Đức", 225 tin
+        # trong 4000 tin gần nhất). Lấy vế mang tên đơn vị hành chính thật; nếu cả
+        # hai vế đều không ghi rõ thì lấy vế cuối. Không xử lý thì chuỗi nguyên
+        # "thu duc - quan thu duc" không khớp whitelist → loại oan tin Thủ Đức.
+        if " - " in district:
+            parts = [p.strip() for p in district.split(" - ") if p.strip()]
+            named = [p for p in parts if any(k in p for k in ["Quận", "Q.", "Huyện", "H."])]
+            if named:
+                district = named[-1]
+            elif parts:
+                district = parts[-1]
+
         if "(" in district and ")" in district:
             outer = district.split("(", 1)[0].strip()
             outer_has_district = any(k in outer for k in ["Q.", "Quận", "H.", "Huyện"])

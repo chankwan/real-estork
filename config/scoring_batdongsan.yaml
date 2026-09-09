@@ -17,7 +17,8 @@ base_score: 50
 
 alert_filters:
   wife_max_listing_age_hours: 24
-  wife_min_score: 52             # Nới 55 → 52 theo thresholds mới
+  wife_min_score: 55             # Đồng bộ 1 mốc cho cả 3 sàn rao vặt (2026-09-08).
+                                 # Đo 3510 tin/18 ngày: 52 → 10,6%, 55 → 10,6% — không đổi thực tế.
   wife_min_price_vnd: 20000000
   product_min_score: 60
   wife_allowed_districts:
@@ -52,20 +53,21 @@ signals:
   # BDS-SPECIFIC SIGNALS (from guru profile + detail page)
   # ===================================================
 
-  bds_broker_multi_active_listings:
-    description: "Guru profile: >5 tin đăng đang có → broker (ngưỡng user approve)"
-    weight: -30
-    check: "poster_profile_hash is not None and poster_total_listings > 5"
+  # Thang chung "người này đăng bao nhiêu tin" (2026-09-08) — đổi tên từ
+  # bds_owner_*/bds_broker_* sang tên dùng chung với các nguồn khác. Các mốc giờ
+  # không chồng nhau (1 / 2-5 / >5) nên trọng số single nâng 10 → 25 để giữ đúng
+  # tổng cũ: tin 1 tin đăng trước đây ăn +15 (few 1-5) cộng +10 (single) = +25.
+  poster_single_listing:
+    description: "Đúng 1 tin đăng — chính chủ mạnh nhất (số đọc từ trang chi tiết hoặc trang guru)"
+    weight: +25
 
-  bds_owner_few_active_listings:
-    description: "Guru profile: 1-5 tin đăng → chủ có ít BĐS; stacks với single_listing khi active==1"
+  poster_few_listings:
+    description: "2-5 tin đăng — chủ có ít BĐS"
     weight: +15
-    check: "poster_profile_hash is not None and 1 <= poster_total_listings <= 5"
 
-  bds_owner_single_listing:
-    description: "Guru profile: đúng 1 tin đăng → strongest chính chủ signal, stack với few_active"
-    weight: +10
-    check: "poster_profile_hash is not None and poster_total_listings == 1"
+  poster_many_listings:
+    description: ">5 tin đăng → môi giới (ngưỡng user approve)"
+    weight: -30
 
   poster_join_year_veteran:
     description: "Tham gia >= 3 năm — signal phụ, thường stack với multi-listings (broker lâu năm)"

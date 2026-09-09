@@ -5,16 +5,18 @@ Module 1 (M1) — curl_cffi Firefox133 (no browser needed)
 Cloudflare bypass: curl_cffi Firefox133 TLS impersonation — verified 22/04/2026.
 httpx plain → 403. StealthyFetcher (camoufox) → works but overkill.
 
-Crawl strategy (v3 — 22/04/2026):
+Crawl strategy (v4 — 08/09/2026):
   Stage 1 — List pages (curl_cffi, 1 shared AsyncSession):
     - Parse __NEXT_DATA__ JSON, 20 items/page
-    - VIP (service_ids ∩ {16,8,4,128}): skip nếu > 24h, keep nếu trong 24h
-    - Normal: early-stop khi gặp non-today listing đầu tiên
-    - Dedup ratio early-stop: >70% normal listings đã seen → stop
+    - Tin trả phí (service_ids ∩ {16,8,4,2}): skip nếu > 24h, keep nếu trong 24h
+    - Tin thường (service_id 128): early-stop khi gặp tin đầu tiên không phải hôm nay
+    - Dedup ratio early-stop: >70% tin thường đã seen → stop
   Stage 2 — Detail pages (curl_cffi, concurrent sem=3):
     - contact_name (từ classified JSON)
-    - Phone (data-phone attr trong body HTML, FREE — không cần auth)
     - Full description (body HTML → plain text)
+
+Không lấy SĐT: muaban dựng Cloudflare Turnstile ở nút "Hiện số" từ 21/08/2026.
+Xem ghi chú trong class.
 """
 
 from __future__ import annotations
@@ -31,7 +33,13 @@ from loguru import logger
 from spiders.base import BaseSpider, RawListing
 
 BASE_URL = "https://muaban.net"
-_VIP_SERVICE_IDS = {16, 8, 4, 128}
+# Gói tin trả phí. Đối chiếu service_display trên trang chi tiết (2026-09-08):
+#   16 = "Nổi bật", 8 = "VIP S", 4 = "VIP 1", 2 = "VIP 2", 128 = "Tin thường".
+# Trước đây bộ này ghi {16, 8, 4, 128} — tức xếp "Tin thường" (miễn phí, chiếm đa
+# số) vào nhóm trả phí và bỏ sót "VIP 2". Hậu quả: tin thường đi vào nhánh VIP nên
+# không bao giờ được đếm vào page_normal_count, khiến cả hai điều kiện dừng sớm
+# không đủ dữ liệu để kích hoạt → mỗi vòng cày hết 50 trang × 3 danh mục.
+_VIP_SERVICE_IDS = {16, 8, 4, 2}
 _VN_TZ = timezone(timedelta(hours=7))
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
@@ -42,7 +50,6 @@ class MuabanSpider(BaseSpider):
     """Spider for muaban.net — curl_cffi Firefox133, no browser required."""
 
     name = "muaban"
-    token_expired: bool = False
 
     def __init__(self, config: dict[str, Any]) -> None:
         super().__init__(config)
@@ -58,48 +65,14 @@ class MuabanSpider(BaseSpider):
         self.start_url = self.start_urls[0]  # giữ cho compat nếu có chỗ khác tham chiếu
         self.dedup_stop_ratio: float = float(config.get("dedup_stop_ratio", 0.7))
         self.detail_concurrency: int = int(config.get("detail_concurrency", 3))
-        self._auth = None
 
-    # ─── Auth (cookie-based phone reveal fallback) ─────────────────────────
-
-    async def _get_auth(self):
-        if self._auth is None:
-            from auth.muaban_auth import MuabanAuthClient
-            self._auth = MuabanAuthClient()
-        return self._auth
-
-    async def enrich_listing(self, listing: RawListing) -> bool:
-        """Cookie-based phone reveal — fallback if detail page didn't get phone."""
-        if not listing.source_id:
-            return False
-        auth = await self._get_auth()
-        cookies = auth.load_cookies()
-        if not cookies:
-            return False
-        api_url = f"https://muaban.net/api/v1/classifieds/{listing.source_id}/phone"
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    api_url,
-                    cookies=cookies,
-                    headers={"Referer": listing.source_url or BASE_URL,
-                              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-                )
-                if resp.status_code == 200:
-                    phone_val = resp.json().get("phone")
-                    if phone_val:
-                        listing.phone = self._clean_phone(phone_val)
-                        return True
-                elif resp.status_code in (401, 403):
-                    logger.warning(
-                        f"[muaban] Session expired (HTTP {resp.status_code}). "
-                        "Run: python -m cli.main setup-muaban"
-                    )
-                    self.token_expired = True
-        except Exception as e:
-            logger.debug(f"[muaban] enrich_listing error: {e}")
-        return False
+    # Phone reveal: BỎ HẲN (2026-09-08).
+    # Muaban dựng Cloudflare Turnstile ở nút "Hiện số" từ 21/08 — số cuối cùng lấy
+    # được là 21/08, sau đó 0/1559 tin. Số cũ nằm sẵn trong nội dung tin (data-phone)
+    # đã bị gỡ, endpoint /api/v1/classifieds/{id}/phone trả 404 (không phải 401/403,
+    # nên KHÔNG phải chuyện hết đăng nhập — spider này chưa từng đăng nhập). Lấy lại
+    # được thì phải mở trình duyệt thật giải captcha từng tin, quá đắt so với giá trị:
+    # vợ vẫn mở link xem số khi thấy tin ưng. Nhóm signal theo SĐT cũng đã tắt.
 
     # ─── Stage 1: List page crawl ──────────────────────────────────────────
 
@@ -257,7 +230,7 @@ class MuabanSpider(BaseSpider):
     # ─── Stage 2: Detail enrichment ────────────────────────────────────────
 
     async def _enrich_details_batch(self, listings: list[RawListing]) -> None:
-        """Concurrently fetch detail pages for contact_name + phone (free, no auth)."""
+        """Concurrently fetch detail pages for contact_name + mô tả đầy đủ."""
         sem = asyncio.Semaphore(self.detail_concurrency)
 
         async def enrich_one(lst: RawListing) -> None:
@@ -271,15 +244,14 @@ class MuabanSpider(BaseSpider):
         )
         await asyncio.gather(*[enrich_one(l) for l in listings], return_exceptions=True)
 
-        phones_ok = sum(1 for l in listings if l.phone)
         names_ok = sum(1 for l in listings if l.contact_name)
-        logger.info(f"[muaban] Stage 2 done: {phones_ok} phones, {names_ok} names")
+        descs_ok = sum(1 for l in listings if (l.description or "").strip())
+        logger.info(f"[muaban] Stage 2 done: {names_ok} names, {descs_ok} mô tả")
 
     async def _enrich_detail(self, listing: RawListing) -> None:
         """
         Fetch detail page via curl_cffi Firefox133.
-        Extracts: contact_name, phone (data-phone in body HTML), full description.
-        No auth required — phone embedded in SSR HTML.
+        Extracts: contact_name + mô tả đầy đủ (nguồn cho nhóm signal nội dung).
         """
         if not listing.source_url:
             return
@@ -315,15 +287,6 @@ class MuabanSpider(BaseSpider):
             # contact_name
             if not listing.contact_name:
                 listing.contact_name = classified.get("contact_name") or None
-
-            # Phone from data-phone attribute in body HTML (free, no auth)
-            if not listing.phone:
-                body_html = classified.get("body", "")
-                phones_found = re.findall(r'data-phone=["\'](\d+)["\']', body_html)
-                if phones_found:
-                    clean = self._clean_phone(phones_found[0])
-                    if clean:
-                        listing.phone = clean
 
             # Full description — upgrade from summary if body is longer
             body_html = classified.get("body", "")

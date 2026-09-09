@@ -10,15 +10,22 @@
 #     Lý do: 18 cycles × ~50 listings/ngày → 0 alert. Trần điểm thực tế = 60.
 #     wife_min_score thiếu trong file v1 → fall back default 55, max muaban
 #     đạt sau penalty thường chỉ 30-50 → không alert.
+#   - v3 (session 24 / 2026-09-08): gỡ 2 signal đọc "số tin đăng người bán" —
+#     muaban không công bố số đó nên chúng chỉ fire nhờ giá trị mặc định 999 và
+#     trừ 40 điểm cho MỌI tin. Đây mới là nguyên nhân thật của "0 alert", v2 chỉ
+#     chữa triệu chứng bằng cách hạ ngưỡng. Bỏ luôn signal dựa SĐT (muaban che số
+#     từ 21/08). wife_min_score trả về 55 cho đồng bộ với nhatot + batdongsan.
 
-version: 2
+version: 3
 base_score: 50
 threshold_chinh_chu: 60         # nới 65 → 60 (thiếu 3 nhatot-only positive signals)
 threshold_can_xac_minh: 38      # nới 40 → 38
 
 alert_filters:
   wife_max_listing_age_hours: 24
-  wife_min_score: 50             # nới 55 → 50 (cho phép can_xac_minh score=50 alert)
+  wife_min_score: 55             # Đồng bộ 1 mốc cho cả 3 sàn rao vặt (2026-09-08).
+                                 # Mốc 50 cũ được hạ xuống để bù cho -40 điểm oan;
+                                 # gỡ được nguyên nhân rồi thì không cần nới nữa.
   wife_min_price_vnd: 15000000   # giữ theo URL muaban (?price=15000000-)
   product_min_score: 60
   wife_allowed_districts:
@@ -56,12 +63,15 @@ signals:
   text_owner_language:
     weight: -5   # Brokers claim this often
 
-  # Muaban-specific Profile Signals
-  muaban_multi_active_listings:
-    weight: -40  # >= 5 listings = Broker per user instruction
-  
-  muaban_few_active_listings:
-    weight: +20  # < 5 listings = Owner candidate
+  # muaban_multi_active_listings (-40) / muaban_few_active_listings (+20): XOÁ
+  # (2026-09-08). Cả hai đọc "số tin đăng của người bán" — muaban.net không công
+  # bố con số này ở bất kỳ đâu (dữ liệu trang danh sách, trang chi tiết, 3 dạng
+  # URL trang cá nhân đều 404, không có API). Vì không có số, chúng chỉ fire nhờ
+  # giá trị mặc định 999 → trừ 40 điểm cho 100% tin muaban → trần điểm 8 ngày đo
+  # được là 40 trong khi ngưỡng gửi là 50 → 252 cycle liên tiếp, 1028 tin mới,
+  # 0 alert. Thang chung poster_* không khai ở đây vì muaban không có dữ liệu nạp;
+  # việc lọc môi giới dựa vào chốt chặn same_session (đang loại đúng 93% tin)
+  # cộng nhóm signal nội dung bên dưới.
 
   avatar_is_blank:
     weight: +15  # Blank avatar = typical owner
@@ -81,9 +91,10 @@ signals:
   listing_stale:
     weight: -15   # > 7 ngày (phòng trường hợp VIP pin lâu)
 
-  # Phone spam reputation
+  # trangtrang_spam_penalty: TẮT (2026-09-08) — dựa vào SĐT, mà muaban đã che số
+  # từ 21/08 (0/1559 tin có số trong 18 ngày sau đó). Không còn cơ hội fire.
   trangtrang_spam_penalty:
-    weight: -30   # Muaban có nhiều spam hơn → weight cao hơn default
+    weight: 0
 
   # Other default signals to keep
   account_name_broker_keywords:

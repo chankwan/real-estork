@@ -41,7 +41,9 @@ class SignalContext:
     phone_hidden: bool = False                 # True = seller chủ động ẩn SĐT trên nhatot
 
     # From poster info (if available from platform)
-    poster_total_listings: int = 999          # Assume high (unknown) by default
+    # None = CHƯA BIẾT. Mọi signal đọc field này phải đi qua poster_count_known()
+    # trước khi so sánh — "không có số" không bao giờ được hoá thành một kết luận.
+    poster_total_listings: int | None = None
     poster_sold_listings: int = 0             # Historical total posted (0=unknown)
     account_type: str | None = None           # "u"=personal, "s"=business, None=unknown
     contact_name: str = ""                    # Seller display name (for broker keyword check)
@@ -87,16 +89,19 @@ class SignalContext:
     ) -> "SignalContext":
         """Build SignalContext from a RawListing + optional phone stats."""
         stats = phone_stats or {}
-        # Số tin đăng của người bán: ưu tiên giá trị spider đọc được (vd
-        # seller_info.live_ads của nhatot) → DB stats → 999. Bước 999 là bắt buộc:
-        # thiếu số phải hoá thành "coi như nhiều tin" (signal không fire), KHÔNG
-        # được để None lọt vào ctx — mọi signal so sánh sẽ ném TypeError và bị
-        # classifier nuốt, tin chính chủ âm thầm mất điểm.
+        # Số tin đăng của người bán: giá trị spider đọc được (vd seller_info.live_ads
+        # của nhatot, trang guru của batdongsan) → DB stats → None.
+        #
+        # None ở đây nghĩa là CHƯA BIẾT, và phải giữ nguyên là None. Trước đây chỗ
+        # này thay None bằng 999 ("coi như nhiều tin") — với nhatot thì vô hại (signal
+        # cộng không fire) nhưng với muaban, nơi sàn không hề công bố số tin đăng,
+        # 999 lại KÍCH HOẠT signal phạt môi giới và trừ thẳng 40 điểm cho mọi tin,
+        # khiến 252 cycle liên tiếp không gửi nổi 1 alert. Thiếu dữ liệu phải im
+        # lặng, không được biến thành kết luận. Các signal tự guard bằng
+        # poster_count_known() nên None không còn gây TypeError.
         poster_total = getattr(listing, "poster_total_listings", None)
         if poster_total is None:
             poster_total = stats.get("poster_total_listings")
-        if poster_total is None:
-            poster_total = 999
         return cls(
             title=listing.title or "",
             description=listing.description or "",
@@ -189,7 +194,11 @@ def check_posted_outside_business_hours(ctx: SignalContext) -> bool:
     return ctx.posted_hour < 8 or ctx.posted_hour > 18 or ctx.is_weekend
 
 def check_account_new_or_few_posts(ctx: SignalContext) -> bool:
-    if ctx.poster_total_listings is None:
+    """DEPRECATED — thay bằng poster_single_listing / poster_few_listings.
+
+    Giữ lại để config cũ không vỡ nếu còn khai tên này ở đâu đó.
+    """
+    if not poster_count_known(ctx):
         return False
     return ctx.poster_total_listings <= 2
 
@@ -316,34 +325,43 @@ def check_description_too_long(ctx: SignalContext) -> bool:
     return len(ctx.description) > 500
 
 # ============================================================
-# Batdongsan-specific signals
-# All require guru profile enrichment (poster_profile_hash set).
-# Without enrichment, the default poster_total_listings=999 would
-# wrongly fire the broker signal — the guard prevents that.
+# "Người này đang đăng bao nhiêu tin?" — thang chung cho MỌI nguồn.
+#
+# Trước đây cùng một câu hỏi được cài 3 lần với 3 cái tên khác nhau
+# (account_new_or_few_posts / bds_owner_* / muaban_*) và, tệ hơn, 3 cách xử lý
+# khác nhau khi thiếu số. Giờ chỉ còn một bộ: nguồn nào đọc được số thì chấm,
+# nguồn nào không đọc được thì cả ba signal đều im. Trọng số vẫn để mỗi
+# config/scoring_*.yaml tự chỉnh vì mỗi sàn có mật độ môi giới khác nhau.
+#
+# Các mốc không chồng nhau: đúng 1 tin / 2-5 tin / trên 5 tin.
 # ============================================================
 
-def _bds_has_active_count(ctx: SignalContext) -> bool:
-    """True khi có số liệu tin đăng thực từ detail page (không phải sentinel/lỗi)."""
+def poster_count_known(ctx: SignalContext) -> bool:
+    """Có số tin đăng thật của người bán chưa?
+
+    Loại cả None (sàn không công bố, hoặc chưa enrich) lẫn -1 (batdongsan dùng
+    làm dấu 'đọc trang chi tiết thất bại'). Không có số → mọi signal họ hàng im.
+    """
     t = ctx.poster_total_listings
-    return t is not None and t >= 0 and t < 999
+    return t is not None and t >= 0
 
-def check_bds_broker_multi_active_listings(ctx: SignalContext) -> bool:
-    """Detail page: >5 tin đăng đang có → broker chuyên nghiệp."""
-    if not _bds_has_active_count(ctx):
-        return False
-    return ctx.poster_total_listings > 5
-
-def check_bds_owner_few_active_listings(ctx: SignalContext) -> bool:
-    """Detail page: 1-5 tin đăng → chủ có ít BĐS. Stacks với single_listing khi ==1."""
-    if not _bds_has_active_count(ctx):
-        return False
-    return 1 <= ctx.poster_total_listings <= 5
-
-def check_bds_owner_single_listing(ctx: SignalContext) -> bool:
-    """Detail page: đúng 1 tin đăng → strongest chính chủ signal."""
-    if not _bds_has_active_count(ctx):
+def check_poster_single_listing(ctx: SignalContext) -> bool:
+    """Đúng 1 tin đang đăng — dấu hiệu chính chủ mạnh nhất."""
+    if not poster_count_known(ctx):
         return False
     return ctx.poster_total_listings == 1
+
+def check_poster_few_listings(ctx: SignalContext) -> bool:
+    """2-5 tin — chủ có vài mặt bằng, vẫn thiên về chính chủ."""
+    if not poster_count_known(ctx):
+        return False
+    return 2 <= ctx.poster_total_listings <= 5
+
+def check_poster_many_listings(ctx: SignalContext) -> bool:
+    """Trên 5 tin — môi giới. Lưới đỡ cho chốt chặn cùng ngưỡng ở orchestrator."""
+    if not poster_count_known(ctx):
+        return False
+    return ctx.poster_total_listings > 5
 
 def check_poster_join_year_veteran(ctx: SignalContext) -> bool:
     """Tham gia >= 3 năm — signal phụ khi combine với multi-listing (broker lâu năm)."""
@@ -384,14 +402,12 @@ def check_listing_is_vip(ctx: SignalContext) -> bool:
     return ctx.is_vip
 
 
-def check_muaban_multi_active_listings(ctx: SignalContext) -> bool:
-    """Dành riêng cho Muaban: >= 5 bài đăng trên trang cá nhân -> Broker."""
-    return ctx.poster_total_listings is not None and ctx.poster_total_listings >= 5
-
-
-def check_muaban_few_active_listings(ctx: SignalContext) -> bool:
-    """Dành riêng cho Muaban: < 5 bài đăng trên trang cá nhân -> Owner candidate."""
-    return ctx.poster_total_listings is not None and ctx.poster_total_listings < 5
+# muaban_multi_active_listings / muaban_few_active_listings: XOÁ (2026-09-08).
+# Cả hai đọc "số tin đăng trên trang cá nhân" — thứ muaban.net không công bố ở
+# bất kỳ đâu: không có trong dữ liệu trang danh sách, không có ở trang chi tiết,
+# không có trang cá nhân người bán (3 dạng URL đều 404), không có API. Chúng chỉ
+# fire nhờ giá trị mặc định 999, tức trừ 40 điểm cho 100% tin muaban.
+# Thay bằng thang chung poster_* — với muaban thang đó im vì không có dữ liệu.
 
 
 def check_ai_classification(ctx: SignalContext) -> float:
@@ -439,16 +455,15 @@ SIGNAL_FUNCTIONS: dict[str, Any] = {
     "description_too_short": check_description_too_short,
     "description_medium": check_description_medium,
     "description_too_long": check_description_too_long,
-    "bds_broker_multi_active_listings": check_bds_broker_multi_active_listings,
-    "bds_owner_few_active_listings": check_bds_owner_few_active_listings,
-    "bds_owner_single_listing": check_bds_owner_single_listing,
+    # Thang chung "người này đăng bao nhiêu tin" — thay cho bds_owner_*/muaban_*
+    "poster_single_listing": check_poster_single_listing,
+    "poster_few_listings": check_poster_few_listings,
+    "poster_many_listings": check_poster_many_listings,
     "poster_join_year_veteran": check_poster_join_year_veteran,
     "detail_has_pro_agent_badge": check_detail_has_pro_agent_badge,
     "account_name_is_phone": check_account_name_is_phone,
     "avatar_is_blank": check_avatar_is_blank,
     "listing_is_vip": check_listing_is_vip,
-    "muaban_multi_active_listings": check_muaban_multi_active_listings,
-    "muaban_few_active_listings": check_muaban_few_active_listings,
-    "trangtrang_spam_penalty": check_trangtrang_spam_penalty,
+    "trangtrang_spam_penalty": check_trangtrang_spam_penalty,  # chỉ facebook_groups còn dùng
     "ai_classification": check_ai_classification,
 }
