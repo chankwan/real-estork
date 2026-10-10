@@ -88,3 +88,6 @@ BOT-CAN-NGUOI-XEM.txt
 
 # Tin ghi tam khi Supabase khong nhan lenh ghi (nap lai bang: bot db-replay)
 .db_spool/
+
+# Ban xuat truoc khi don tin cu
+.db_backup/

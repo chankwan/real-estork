@@ -377,6 +377,59 @@ def send_digest_now():
     asyncio.run(_run())
 
 
+@app.command("housekeeping")
+def housekeeping(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Chỉ đếm, không đụng gì"),
+):
+    """Dọn tin cũ + backup .env lên Google Drive. Chạy hàng tuần qua Task Scheduler."""
+    from db.maintenance import LoiBaoTri, chay
+
+    async def _bao(text: str) -> None:
+        from notifications.telegram import TelegramNotifier
+
+        try:
+            await TelegramNotifier().send_lifecycle(text)
+        except Exception as e:
+            console.print(f"[yellow]Không gửi được Telegram: {e}[/yellow]")
+
+    try:
+        bc = chay(chi_thu=dry_run)
+    except LoiBaoTri as e:
+        console.print(f"[red]DỪNG: {e}[/red]")
+        # Kêu to. Im lặng khi backup hỏng chính là cách mất dữ liệu mà không
+        # ai biết — dự án này đã dính hai lần (63 cycle trắng, 21h RLS).
+        asyncio.run(_bao(
+            "🚨 <b>RealEstork — BẢO TRÌ THẤT BẠI</b>\n"
+            f"{e}\n\nDữ liệu trong DB còn nguyên, chưa xoá gì."
+        ))
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]LỖI: {type(e).__name__}: {e}[/red]")
+        asyncio.run(_bao(
+            "🚨 <b>RealEstork — BẢO TRÌ LỖI</b>\n"
+            f"<code>{type(e).__name__}: {str(e)[:300]}</code>"
+        ))
+        raise typer.Exit(1)
+
+    dong = (
+        f"mốc {bc['moc']} · cần dọn {bc['can_don']} · đã xoá {bc['da_xoa']}"
+        f" · .env: {bc['env']}"
+    )
+    console.print(f"[green]{dong}[/green]")
+    if bc.get("ban_luu"):
+        console.print(f"bản lưu: {bc['ban_luu']}")
+
+    if not dry_run:
+        # Báo cả khi THÀNH CÔNG, mỗi tuần một dòng. Không thấy dòng này tuần
+        # nào là biết job đã chết lặng — thứ nguy hiểm hơn job báo lỗi.
+        asyncio.run(_bao(
+            "🧹 <b>RealEstork — bảo trì hàng tuần xong</b>\n"
+            f"Tin cũ đã dọn: <b>{bc['da_xoa']}</b> (mốc {bc['moc']})\n"
+            + (f"Bản lưu: <code>{bc['ban_luu']}</code>\n" if bc.get("ban_luu") else "")
+            + f".env: {bc['env']}"
+        ))
+
+
 @app.command("db-replay")
 def db_replay(
     dry_run: bool = typer.Option(False, "--dry-run", help="Chỉ đếm, không ghi DB"),
