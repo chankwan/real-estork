@@ -56,6 +56,8 @@ class SignalContext:
     poster_join_year: int | None = None       # Absolute year the poster joined the platform
     has_pro_agent_badge: bool = False         # Detail/list page carries "Môi giới chuyên nghiệp" badge
     is_vip: bool = False
+    manually_bumped: bool = False             # muaban: dấu thời gian nằm NGOÀI lượt quét
+                                              # nửa đêm của sàn → người thật vừa đẩy tin
     avatar_url: str | None = None
     is_main_street: bool | None = None      # True=mặt tiền, False=hẻm, None=unknown
 
@@ -108,6 +110,7 @@ class SignalContext:
             phone=listing.phone or "",
             floor_level=listing.floor_level,
             listing_age_hours=listing.listing_age_hours,
+            manually_bumped=getattr(listing, "manually_bumped", False),
             images=listing.images or [],
             posted_at=listing.posted_at,
             price_vnd_monthly=listing.price_vnd_monthly,
@@ -272,6 +275,26 @@ def check_account_type_personal(ctx: SignalContext) -> bool:
 def check_account_type_business(ctx: SignalContext) -> bool:
     """Platform xác nhận tài khoản doanh nghiệp/shop (nhatot type=s). None=unknown → không fire."""
     return ctx.account_type == "s"
+
+def check_manually_bumped(ctx: SignalContext) -> bool:
+    """Tin vừa được NGƯỜI đẩy lên, không phải lượt quét nửa đêm của sàn.
+
+    Chỉ muaban set cờ này (xem MuabanSpider._la_day_tay). Nguồn khác luôn
+    False nên signal im — không cần guard riêng.
+
+    Vì sao đáng cộng điểm: muaban gán lại dấu thời gian cho gần như toàn bộ
+    tin trong khung 00:00-00:06 mỗi đêm, nên "tin mới" trên sàn này là con số
+    vô nghĩa. Thứ còn lại mang thông tin là ai bỏ công bấm đẩy NGOÀI khung
+    đó. Với mặt bằng cho thuê, chủ lấy lại được mặt bằng thì đẩy tin cũ lên
+    tìm khách mới — đó là lúc tin đáng xem nhất.
+
+    Cảnh báo đã biết, chưa có dữ liệu để kết luận: môi giới cũng đẩy tay, và
+    đẩy siêng hơn chủ nhà (20 tin thì bấm cả 20). Signal này chứng minh "tin
+    đang được chăm", KHÔNG chứng minh ai chăm. Trọng số đặt theo quyết định
+    của user (22/09); cần đối chiếu với phiếu 👍/👎 rồi chỉnh lại.
+    """
+    return ctx.manually_bumped
+
 
 def check_listing_very_fresh(ctx: SignalContext) -> bool:
     return ctx.listing_age_hours is not None and ctx.listing_age_hours <= 2
@@ -445,6 +468,7 @@ SIGNAL_FUNCTIONS: dict[str, Any] = {
     "phone_hidden_owner": check_phone_hidden_owner,
     "account_type_personal": check_account_type_personal,
     "account_type_business": check_account_type_business,
+    "manually_bumped": check_manually_bumped,
     "listing_very_fresh": check_listing_very_fresh,
     "listing_fresh": check_listing_fresh,
     "listing_stale": check_listing_stale,

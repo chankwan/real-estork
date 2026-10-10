@@ -46,7 +46,13 @@ schedules:
     function: check_write_health # Sự cố 26-27/08: 16,5h ghi hỏng mà không ai biết.
     enabled: true
 
-  collect_feedback:
-    interval_minutes: 1          # Đọc nút 👍/👎 vợ bấm dưới mỗi tin Telegram.
-    function: collect_feedback   # Gọi nhẹ (get_updates), 1 phút để bấm xong thấy phản hồi ngay.
+  # Nút 👍/👎 KHÔNG còn chạy theo lịch. Telegram chỉ nhận trả lời cho một lần
+  # bấm trong ~15 giây, mà lịch 1 phút/lần nghĩa là cú bấm nằm chờ trung bình
+  # ~30 giây — quá hạn 100% số lần (đo trên log: 09/08 5/5, 09/11 5/5, 15/09
+  # 1/1). Giờ chạy bằng vòng nghe thường trực (long polling) khởi động cùng
+  # bot, xem orchestrator/agent.py → run_feedback_listener.
+
+  check_source_silence:
+    interval_minutes: 10         # Nguồn nào im lặng quá lâu thì kêu.
+    function: check_source_silence  # Bắt ca nhatot treo 8h (14/09) mà không ai biết.
     enabled: true

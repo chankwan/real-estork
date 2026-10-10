@@ -7,6 +7,7 @@ Bot API: python-telegram-bot
 
 from __future__ import annotations
 
+import asyncio
 import html
 import os
 from typing import Any
@@ -27,6 +28,9 @@ TELEGRAM_SCORE_BADGES = {
 
 
 _FEEDBACK_PREFIX = "fb"
+# Telegram giữ kết nối tối đa ngần này giây chờ có người bấm nút. Càng dài càng
+# ít request rỗng; 25s là mức an toàn dưới mọi giới hạn phía Telegram.
+_FEEDBACK_POLL_TIMEOUT = 25
 
 
 def _feedback_keyboard(
@@ -111,72 +115,122 @@ class TelegramNotifier:
                 logger.error(f"[telegram] send_review to group topic {topic} error: {e}")
         await self.send_admin(text)
 
-    async def poll_feedback(self, save_fn: Any) -> int:
-        """Đọc các lần bấm 👍/👎 rồi giao cho save_fn lưu lại.
-
-        save_fn(listing_id: str, is_good: bool, voter_id: str)
-            -> (số phiếu đáng xem, số phiếu rác) nếu lưu được, None nếu hỏng
-
-        Dùng get_updates thay vì chạy Application/webhook: bot này chỉ cần đọc
-        nút bấm, không cần xử lý lệnh chat. Gọi định kỳ từ scheduler.
-        Trả về số phản hồi đã ghi nhận.
-        """
-        if not self.is_configured:
-            return 0
+    async def _apply_feedback_update(self, u: Any, save_fn: Any) -> bool:
+        """Xử lý MỘT lần bấm nút. Trả về True nếu ghi được phiếu."""
+        q = getattr(u, "callback_query", None)
+        data = getattr(q, "data", "") or ""
+        if not q or not data.startswith(f"{_FEEDBACK_PREFIX}|"):
+            return False
         try:
-            updates = await self.bot.get_updates(
-                offset=self._feedback_offset,
-                timeout=0,
-                allowed_updates=["callback_query"],
-            )
-        except TelegramError as e:
-            logger.warning(f"[telegram] poll_feedback error: {e}")
-            return 0
+            _, flag, listing_id = data.split("|", 2)
+        except ValueError:
+            # Payload lạ (vd nút cũ từ phiên bản trước) — vẫn phải trả lời,
+            # nếu không Telegram quay vòng vòng trên máy người bấm.
+            try:
+                await q.answer("Nút này không còn dùng")
+            except TelegramError:
+                pass
+            return False
 
-        saved = 0
-        for u in updates:
-            self._feedback_offset = u.update_id + 1
-            q = getattr(u, "callback_query", None)
-            data = getattr(q, "data", "") or ""
-            if not q or not data.startswith(f"{_FEEDBACK_PREFIX}|"):
-                continue
+        is_good = flag == "1"
+        voter = getattr(q, "from_user", None)
+        voter_id = str(getattr(voter, "id", "") or "")
+        counts = None
+        try:
+            counts = save_fn(listing_id, is_good, voter_id)
+        except Exception as e:
+            logger.error(f"[telegram] save feedback error: {type(e).__name__}: {e}")
+        ok = counts is not None
+
+        # Lời cảm ơn và việc cập nhật số phiếu lên nút phải nằm ở HAI khối
+        # riêng. Trước đây chúng chung một khối: Telegram chỉ nhận trả lời
+        # trong ~15 giây, mà bot lại hỏi 1 phút/lần nên lời cảm ơn LUÔN quá
+        # hạn — ném lỗi ngay dòng đầu, kéo theo phần cập nhật nút bên dưới
+        # không bao giờ chạy. Vợ bấm xong thấy nút xoay rồi đứng im, tưởng
+        # nút hỏng, dù phiếu đã vào DB. Tách ra thì dù lời cảm ơn có lỡ hạn,
+        # số phiếu vẫn hiện lên nút.
+        try:
+            await q.answer("Đã ghi nhận, cảm ơn!" if ok else "Chưa lưu được, thử lại sau")
+        except TelegramError as e:
+            logger.warning(f"[telegram] answer callback error: {e}")
+
+        if ok:
             try:
-                _, flag, listing_id = data.split("|", 2)
-            except ValueError:
-                # Payload lạ (vd nút cũ từ phiên bản trước) — vẫn phải trả lời,
-                # nếu không Telegram quay vòng vòng trên máy người bấm.
-                try:
-                    await q.answer("Nút này không còn dùng")
-                except TelegramError:
-                    pass
-                continue
-            is_good = flag == "1"
-            voter = getattr(q, "from_user", None)
-            voter_id = str(getattr(voter, "id", "") or "")
-            counts = None
-            try:
-                counts = save_fn(listing_id, is_good, voter_id)
-            except Exception as e:
-                logger.error(f"[telegram] save feedback error: {type(e).__name__}: {e}")
-            ok = counts is not None
-            try:
-                await q.answer("Đã ghi nhận, cảm ơn!" if ok else "Chưa lưu được, thử lại sau")
-                if ok:
-                    # Giữ CẢ HAI nút + hiện số phiếu → người sau bấm được, người
-                    # bấm nhầm sửa được.
-                    g, b = counts
-                    await q.edit_message_reply_markup(
-                        reply_markup=_feedback_keyboard(listing_id, good_count=g, bad_count=b)
-                    )
+                # Giữ CẢ HAI nút + hiện số phiếu → người sau bấm được, người
+                # bấm nhầm sửa được.
+                g, b = counts
+                await q.edit_message_reply_markup(
+                    reply_markup=_feedback_keyboard(listing_id, good_count=g, bad_count=b)
+                )
             except TelegramError as e:
                 # "message is not modified" khi bấm lại đúng nút cũ — vô hại.
                 if "not modified" not in str(e).lower():
-                    logger.warning(f"[telegram] answer callback error: {e}")
-            if ok:
-                saved += 1
-                logger.info(
-                    f"[telegram] Phản hồi: {listing_id} → {'đáng xem' if is_good else 'tin rác'}"
+                    logger.warning(f"[telegram] edit keyboard error: {e}")
+            logger.info(
+                f"[telegram] Phản hồi: {listing_id} → {'đáng xem' if is_good else 'tin rác'}"
+            )
+        return ok
+
+    async def run_feedback_listener(self, save_fn: Any) -> None:
+        """Giữ đường dây mở với Telegram để nhận nút 👍/👎 gần như tức thì.
+
+        Vì sao KHÔNG hỏi định kỳ nữa: Telegram chỉ nhận trả lời cho một lần
+        bấm trong ~15 giây. Bản cũ chạy theo lịch 1 phút/lần nên cú bấm nằm
+        chờ trung bình ~30 giây, tệ nhất 60 — quá hạn 100% số lần. Đo trên
+        log: 09/08 5 lần bấm / 5 lỗi, 09/11 5/5, 15/09 1/1, không sót cú nào.
+
+        Long polling: mỗi lần gọi Telegram giữ kết nối tới 25 giây, có người
+        bấm là trả về ngay (~1 giây). read_timeout phải LỚN HƠN timeout, nếu
+        không phía client tự ngắt trước và sinh ra "Timed out" giả.
+
+        Chạy vô hạn, chỉ dừng khi bị cancel lúc tắt bot.
+        """
+        if not self.is_configured:
+            logger.warning("[telegram] Không có token — bỏ qua vòng nghe nút phản hồi.")
+            return
+
+        backoff = 1
+        logger.info("[telegram] 👂 Vòng nghe nút phản hồi đã bật (long polling).")
+        while True:
+            try:
+                await self._drain_feedback_once(save_fn)
+                backoff = 1
+            except asyncio.CancelledError:
+                logger.info("[telegram] Vòng nghe nút phản hồi đã dừng.")
+                raise
+            except Exception as e:
+                # Mất mạng / Telegram chập → nghỉ rồi thử lại, KHÔNG thoát vòng.
+                # Thoát vòng là mất nút bấm im lặng cho tới lần restart sau.
+                logger.warning(
+                    f"[telegram] vòng nghe nút lỗi ({type(e).__name__}: {e}) — "
+                    f"thử lại sau {backoff}s"
                 )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+
+    async def _drain_feedback_once(self, save_fn: Any) -> int:
+        """Đọc MỘT lượt hàng cập nhật của Telegram. Trả về số phiếu đã ghi.
+
+        Tách riêng khỏi run_feedback_listener để test được một lượt mà không
+        vướng vòng lặp vô hạn. Lỗi được ném lên trên cho vòng lặp xử lý
+        nghỉ - thử lại.
+        """
+        updates = await self.bot.get_updates(
+            offset=self._feedback_offset,
+            timeout=_FEEDBACK_POLL_TIMEOUT,
+            read_timeout=_FEEDBACK_POLL_TIMEOUT + 10,
+            allowed_updates=["callback_query"],
+        )
+        saved = 0
+        for u in updates:
+            self._feedback_offset = u.update_id + 1
+            try:
+                if await self._apply_feedback_update(u, save_fn):
+                    saved += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"[telegram] xử lý nút bấm lỗi: {type(e).__name__}: {e}")
         return saved
 
     async def send_lifecycle(self, text: str) -> None:

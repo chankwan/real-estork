@@ -82,3 +82,9 @@ scratch_*.py
 # === Claude Code internal ===
 .claude/
 BOT-CAN-NGUOI-XEM.txt
+
+# Supabase Personal Access Token (tam thoi, revoke sau khi dung)
+.supabase-pat
+
+# Tin ghi tam khi Supabase khong nhan lenh ghi (nap lai bang: bot db-replay)
+.db_spool/

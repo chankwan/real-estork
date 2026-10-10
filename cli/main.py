@@ -377,6 +377,57 @@ def send_digest_now():
     asyncio.run(_run())
 
 
+@app.command("db-replay")
+def db_replay(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Chỉ đếm, không ghi DB"),
+):
+    """Nạp lại các tin đã ghi tạm ra file trong lúc Supabase không nhận lệnh ghi."""
+    import json
+    from pathlib import Path
+
+    from db.client import SupabaseDB
+
+    spool = Path(".db_spool/pending_listings.jsonl")
+    if not spool.exists():
+        console.print("[green]Không có tin nào chờ nạp lại.[/green]")
+        return
+
+    rows = []
+    # Tách bằng "\n" chứ KHÔNG dùng splitlines(): splitlines() cắt thêm ở
+    # U+2028/U+2029/\x85, mà json.dumps không escape mấy ký tự đó. Một tin
+    # nhatot có U+2028 trong mô tả từng bị xé đôi thành 2 dòng không parse
+    # được — nạp lại sẽ bỏ sót tin thật mà không ai biết (phát hiện 10/10).
+    for n, line in enumerate(spool.read_text(encoding="utf-8").split("\n"), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            console.print(f"[yellow]Bỏ qua dòng {n}: {e}[/yellow]")
+
+    console.print(f"Có [bold]{len(rows)}[/bold] dòng chờ nạp lại.")
+    if dry_run:
+        return
+
+    db = SupabaseDB()
+    ok = 0
+    # Giữ nguyên thứ tự file: tin được alert có thêm dòng mang status mới,
+    # upsert khoá trên (source, source_id) nên dòng sau đè dòng trước.
+    for r in rows:
+        if db.upsert_listing(r):
+            ok += 1
+        else:
+            console.print("[red]Ghi hỏng — dừng, giữ nguyên file để chạy lại sau.[/red]")
+            break
+
+    console.print(f"[green]Đã ghi {ok}/{len(rows)} dòng.[/green]")
+    if ok == len(rows):
+        done = spool.with_suffix(".jsonl.done")
+        spool.rename(done)
+        console.print(f"Xong hết — đổi tên file thành {done} (xoá tay nếu không cần).")
+
+
 @app.command("start")
 def start_orchestrator(
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without sending alerts"),

@@ -63,6 +63,7 @@ class NhatotSpider(BaseSpider):
         loop = asyncio.get_running_loop()
 
         all_listings: list[RawListing] = []
+        self.cycle_health = {}
         for idx, start_url in enumerate(self.start_urls):
             url_listings = await self._fetch_pages_from(start_url, loop)
             all_listings.extend(url_listings)
@@ -109,6 +110,7 @@ class NhatotSpider(BaseSpider):
         min_pages = self.min_pages_before_early_stop
 
         listings: list[RawListing] = []
+        prev_page_ids: set[str] | None = None
         try:
             from scrapling import StealthyFetcher
         except ImportError:
@@ -129,12 +131,14 @@ class NhatotSpider(BaseSpider):
                 )
 
                 if page is None:
+                    self.bump_health("list_http_error")
                     logger.warning(f"[nhatot:{slug}] No response on page {page_num}")
                     break
 
                 html = page.html_content or ""
 
                 if "Just a moment" in html or "Checking your browser" in html:
+                    self.bump_health("list_cf_blocked")
                     logger.warning(f"[nhatot:{slug}] Cloudflare challenge not bypassed!")
                     break
 
@@ -146,6 +150,7 @@ class NhatotSpider(BaseSpider):
                     re.DOTALL,
                 )
                 if not match:
+                    self.bump_health("list_no_data")
                     logger.warning(f"[nhatot:{slug}] No __NEXT_DATA__ on page {page_num}")
                     logger.debug(f"[nhatot:{slug}] HTML snippet: {html[:300]}")
                     break
@@ -163,6 +168,21 @@ class NhatotSpider(BaseSpider):
                     logger.info(f"[nhatot:{slug}] No ads on page {page_num}")
                     break
 
+                # Chốt chặn "phân trang chết" — cùng cơ chế với muaban (nơi lỗi
+                # này đã im lặng cả tuần): kiểm tra KẾT QUẢ chứ không kiểm tra
+                # tên tham số, nên nhatot đổi cách gọi trang thì vẫn bắt được.
+                page_ids = {str(a.get("list_id")) for a in ads if a.get("list_id")}
+                if prev_page_ids is not None and page_ids and page_ids == prev_page_ids:
+                    self.bump_health("list_repeat_page")
+                    logger.warning(
+                        f"[nhatot:{slug}] trang {page_num} trùng khít trang "
+                        f"{page_num - 1} ({len(page_ids)} ID y hệt) — phân trang "
+                        f"không còn tác dụng"
+                    )
+                    break
+                prev_page_ids = page_ids
+
+                self.bump_health("list_pages_ok")
                 logger.info(f"[nhatot:{slug}] Found {len(ads)} ads on page {page_num}")
 
                 page_listings: list[RawListing] = []

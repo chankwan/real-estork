@@ -3,6 +3,9 @@ RealEstork — Unit Tests: Dedup Pipeline
 Tests for address/phone normalization and dedup rules.
 """
 
+import asyncio
+import json
+
 import pytest
 from datetime import datetime, timezone
 
@@ -660,7 +663,7 @@ class TestFeedbackButtons:
             async def get_updates(self, **kw): return [_U(5, q)]
         n.bot = _Bot()
 
-        assert asyncio.run(n.poll_feedback(lambda lid, good, voter="": (1, 0))) == 0
+        assert asyncio.run(n._drain_feedback_once(lambda lid, good, voter="": (1, 0))) == 0
         assert q.answered, "phải trả lời callback dù payload không hiểu được"
 
     def test_callback_data_khong_vuot_gioi_han_64_byte(self):
@@ -695,7 +698,7 @@ class TestFeedbackButtons:
         def save(lid, good, voter=""):
             got.append((lid, good)); return (1, 0)
 
-        saved = asyncio.run(n.poll_feedback(save))
+        saved = asyncio.run(n._drain_feedback_once(save))
         assert saved == 2
         assert got == [("listing-A", True), ("listing-B", False)]
         assert n._feedback_offset == 4        # đã xác nhận hết, restart không đọc lại
@@ -722,7 +725,7 @@ class TestFeedbackButtons:
             async def get_updates(self, **kw): return [_U(9, q)]
         n.bot = _Bot()
 
-        assert asyncio.run(n.poll_feedback(lambda lid, good, voter="": None)) == 0
+        assert asyncio.run(n._drain_feedback_once(lambda lid, good, voter="": None)) == 0
         assert q.answered and "Chưa lưu được" in q.answered[0]
 
 
@@ -831,7 +834,7 @@ class TestFeedbackNhieuNguoi:
             async def get_updates(self, **kw): return ups
         n.bot = _Bot()
 
-        assert asyncio.run(n.poll_feedback(save)) == 2
+        assert asyncio.run(n._drain_feedback_once(save)) == 2
         assert kho == {("tin-A", "111"): True, ("tin-A", "222"): False}, \
             "phiếu của người này không được ghi đè người kia"
 
@@ -866,7 +869,7 @@ class TestFeedbackNhieuNguoi:
             async def get_updates(self, **kw): return ups
         n.bot = _Bot()
 
-        asyncio.run(n.poll_feedback(save))
+        asyncio.run(n._drain_feedback_once(save))
         assert kho[("tin-A", "111")] is False, "sửa được phiếu của mình"
         assert kho[("tin-A", "222")] is False, "phiếu người kia còn nguyên"
         assert len(kho) == 2, "không đẻ thêm phiếu trùng"
@@ -1079,3 +1082,621 @@ class TestBaoDongLoiChungChi:
         assert "boom" in db.last_write_error
         db._note_write_ok()
         assert db.write_error_streak == 0 and db.last_write_error == ""
+
+
+class TestNutBamHetHan:
+    """Bug 15/09: vợ bấm nút, phiếu vào DB nhưng nút không đổi gì — bấm lại,
+    vẫn không đổi. Telegram chỉ nhận trả lời cho một lần bấm trong ~15 giây,
+    mà bot cũ hỏi 1 phút/lần nên trả lời LUÔN quá hạn. Lời cảm ơn và việc cập
+    nhật số phiếu lúc đó nằm chung một khối try, nên lời cảm ơn ném lỗi là kéo
+    theo phần cập nhật nút không bao giờ chạy.
+
+    Đo trên log: 09/08 5 lần bấm / 5 lỗi, 09/11 5/5, 15/09 1/1 — không sót cú nào.
+    """
+
+    def _make(self, answer_raises: bool):
+        import asyncio
+        from telegram.error import TelegramError
+        from notifications.telegram import TelegramNotifier
+
+        da_sua_nut = []
+
+        class _Q:
+            data = "fb|1|listing-A"
+            from_user = None
+
+            async def answer(self, text=None):
+                if answer_raises:
+                    raise TelegramError(
+                        "Query is too old and response timeout expired "
+                        "or query id is invalid"
+                    )
+
+            async def edit_message_reply_markup(self, reply_markup=None):
+                da_sua_nut.append(reply_markup)
+
+        class _U:
+            update_id = 1
+            callback_query = _Q()
+
+        n = TelegramNotifier.__new__(TelegramNotifier)
+        n.token = "x"
+        n._feedback_offset = None
+
+        class _Bot:
+            async def get_updates(self, **kw):
+                return [_U()]
+
+        n.bot = _Bot()
+        saved = asyncio.run(n._drain_feedback_once(lambda lid, good, voter="": (2, 1)))
+        return saved, da_sua_nut
+
+    def test_loi_cam_on_het_han_van_phai_cap_nhat_so_phieu_len_nut(self):
+        saved, da_sua_nut = self._make(answer_raises=True)
+        assert saved == 1, "phiếu vẫn phải được tính"
+        assert da_sua_nut, (
+            "ĐÂY LÀ BUG GỐC: lời cảm ơn quá hạn không được phép chặn việc "
+            "cập nhật số phiếu lên nút — nếu không vợ bấm xong thấy nút đứng im"
+        )
+
+    def test_truong_hop_binh_thuong_van_cap_nhat_nut(self):
+        saved, da_sua_nut = self._make(answer_raises=False)
+        assert saved == 1 and da_sua_nut
+
+
+class TestChotChanTrangLap:
+    """Bug 16/09: muaban đổi tên tham số phân trang. Tên cũ KHÔNG gây lỗi —
+    nền tảng trả HTTP 200 kèm đúng 20 tin đúng định dạng, chỉ là luôn của
+    trang 1. Bot cày 50 trang của cùng 20 tin suốt nhiều ngày mà không nhánh
+    lỗi nào chạm tới.
+
+    Chốt chặn kiểm tra KẾT QUẢ (trang mới có trùng khít trang trước không)
+    chứ không kiểm tra tên tham số — nên lần đổi sau vẫn bắt được.
+    """
+
+    def _fake_page(self, ids):
+        import json
+        from datetime import datetime, timedelta, timezone
+        # Dấu thời gian phải TƯƠNG ĐỐI với lúc chạy test. Bản đầu cắm cứng
+        # "2026-09-16T10:00:00+07:00" nên đúng 24h sau là tin hoá "tin cũ",
+        # early-stop non-today bắn trước khi chốt chặn trùng trang kịp chạy —
+        # test tự gãy theo lịch chứ không phải vì code hỏng.
+        vn = timezone(timedelta(hours=7))
+        moi = (datetime.now(vn) - timedelta(hours=2)).isoformat()
+        items = [
+            {
+                "id": i,
+                "title": f"tin {i}",
+                "service_ids": [128],
+                "publish_at": moi,
+                "area": {"name": "Quận 1"},
+            }
+            for i in ids
+        ]
+        payload = {"props": {"pageProps": {"classified": {"items": items}}}}
+        return (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            + json.dumps(payload)
+            + "</script>"
+        )
+
+    def _run(self, trang_lap: bool):
+        import asyncio
+        from spiders.muaban import MuabanSpider
+
+        sp = MuabanSpider({
+            "urls": ["https://muaban.net/x?sort=1"],
+            "max_pages": 5,
+            "request_delay_seconds": 0,
+            "dedup_stop_ratio": 0.99,
+        })
+        sp.cycle_health = {}
+        goi = {"n": 0}
+        html_self = self
+
+        class _Resp:
+            def __init__(self, text):
+                self.status_code = 200
+                self.text = text
+
+        class _Session:
+            async def get(self, url, **kw):
+                goi["n"] += 1
+                if trang_lap:
+                    ids = [1, 2, 3]            # nền tảng luôn đưa trang 1
+                else:
+                    base = goi["n"] * 10
+                    ids = [base + 1, base + 2, base + 3]
+                return _Resp(html_self._fake_page(ids))
+
+        got = asyncio.run(sp._fetch_pages_from(_Session(), "https://muaban.net/x?sort=1"))
+        return sp, got, goi["n"]
+
+    def test_trang_lap_thi_dung_ngay_va_ghi_dau_hieu(self):
+        sp, got, so_lan_goi = self._run(trang_lap=True)
+        assert sp.cycle_health.get("list_repeat_page") == 1, (
+            "không phát hiện được phân trang chết"
+        )
+        assert so_lan_goi == 2, f"phải dừng ngay sau trang 2, đã gọi {so_lan_goi} lần"
+        assert len(got) == 3, "không được gom trùng tin của trang lặp"
+
+    def test_phan_trang_binh_thuong_thi_khong_kich_hoat_oan(self):
+        sp, got, so_lan_goi = self._run(trang_lap=False)
+        assert "list_repeat_page" not in sp.cycle_health, "kêu oan khi phân trang vẫn tốt"
+        assert so_lan_goi == 5 and len(got) == 15
+
+
+class TestChuongNenTangDoi:
+    """Chuông báo khi nền tảng đổi cách hoạt động — cho MỌI nguồn, không riêng
+    muaban. Hai ca thật nó phải bắt được: muaban bỏ tham số phân trang (16/09)
+    và batdongsan nâng tường chặn (17/08, 63 cycle trắng không ai được báo).
+    """
+
+    def _agent(self):
+        import asyncio
+        from orchestrator.agent import RealEstorkAgent
+
+        ag = RealEstorkAgent.__new__(RealEstorkAgent)
+        ag._platform_alerted = {}
+        tin_nhan = []
+
+        class _TG:
+            async def send_admin(self, text):
+                tin_nhan.append(text)
+
+        ag.telegram = _TG()
+        return ag, tin_nhan, asyncio
+
+    class _Spider:
+        def __init__(self, health):
+            self.cycle_health = health
+
+    def test_trang_lap_thi_keu_va_noi_ro_nguyen_nhan(self):
+        ag, tin_nhan, asyncio = self._agent()
+        sp = self._Spider({"list_pages_ok": 1, "list_repeat_page": 1})
+        asyncio.run(ag._check_platform_change("muaban", sp))
+        assert len(tin_nhan) == 1
+        assert "muaban" in tin_nhan[0] and "trang lặp" in tin_nhan[0]
+        assert "phân trang" in tin_nhan[0], "phải nói thẳng phải đi xem chỗ nào"
+
+    def test_khong_keu_lai_khi_su_co_van_the(self):
+        ag, tin_nhan, asyncio = self._agent()
+        sp = self._Spider({"list_pages_ok": 1, "list_repeat_page": 1})
+        for _ in range(5):
+            asyncio.run(ag._check_platform_change("muaban", sp))
+        assert len(tin_nhan) == 1, (
+            "mỗi cycle một tin nhắn thì vài tiếng sau không ai đọc nữa"
+        )
+
+    def test_hoi_phuc_thi_bao_lai(self):
+        ag, tin_nhan, asyncio = self._agent()
+        asyncio.run(ag._check_platform_change("muaban", self._Spider({"list_repeat_page": 1})))
+        asyncio.run(ag._check_platform_change("muaban", self._Spider({"list_pages_ok": 9})))
+        assert len(tin_nhan) == 2 and "hoạt động lại" in tin_nhan[1]
+        # hồi phục rồi thì im, không nhắc mãi
+        asyncio.run(ag._check_platform_change("muaban", self._Spider({"list_pages_ok": 9})))
+        assert len(tin_nhan) == 2
+
+    def test_tuong_chan_batdongsan_cung_keu(self):
+        ag, tin_nhan, asyncio = self._agent()
+        asyncio.run(ag._check_platform_change("batdongsan", self._Spider({"list_cf_blocked": 4})))
+        assert "tường chặn" in tin_nhan[0] and "batdongsan" in tin_nhan[0]
+
+    def test_ten_cu_list_no_cards_cua_batdongsan_van_duoc_doc(self):
+        """batdongsan dùng tên cũ `list_no_cards`, cùng nghĩa `list_no_data`."""
+        ag, tin_nhan, asyncio = self._agent()
+        asyncio.run(ag._check_platform_change("batdongsan", self._Spider({"list_no_cards": 3})))
+        assert tin_nhan and "mất dữ liệu" in tin_nhan[0]
+
+    def test_cycle_sach_thi_im(self):
+        ag, tin_nhan, asyncio = self._agent()
+        asyncio.run(ag._check_platform_change("nhatot", self._Spider({"list_pages_ok": 5})))
+        assert tin_nhan == []
+
+
+class TestChuongNguonImLang:
+    """Ca 14/09: vòng Chợ Tốt treo giữa chừng lúc 04:20 khi đang tải một trang.
+    Scheduler chỉ cho mỗi job một lượt chạy cùng lúc nên ~97 lượt sau đó đều bị
+    bỏ qua. 8 tiếng không một tin Chợ Tốt nào — và KHÔNG cơ chế nào hiện có
+    phát hiện ra, vì bot vẫn sống, DB vẫn ghi được, hai nguồn kia vẫn chạy.
+    """
+
+    def _agent(self, now_offset_phut):
+        import asyncio
+        import time
+        from orchestrator.agent import RealEstorkAgent
+
+        ag = RealEstorkAgent.__new__(RealEstorkAgent)
+        ag._source_last_ok = {}
+        ag._silence_alerted = set()
+        ag._start_time = time.time()
+        ag._schedule_config = {
+            "schedules": {
+                "nhatot_cycle": {"interval_minutes": 5, "enabled": True},
+                "muaban_cycle": {"interval_minutes": 20, "enabled": True},
+                "batdongsan_cycle": {"interval_minutes": 20, "enabled": True},
+            }
+        }
+        tin_nhan = []
+
+        class _TG:
+            async def send_admin(self, text):
+                tin_nhan.append(text)
+
+        ag.telegram = _TG()
+        moc = time.time() - now_offset_phut * 60
+        for s in ("nhatot", "muaban", "batdongsan"):
+            ag._source_last_ok[s] = time.time()
+        ag._source_last_ok["nhatot"] = moc
+        return ag, tin_nhan, asyncio
+
+    def test_im_lang_qua_lau_thi_keu(self):
+        # nhatot chu kỳ 5 phút → ngưỡng tối thiểu 30 phút. 8 tiếng = quá xa.
+        ag, tin_nhan, asyncio = self._agent(now_offset_phut=8 * 60)
+        asyncio.run(ag.check_source_silence())
+        assert len(tin_nhan) == 1
+        assert "nhatot" in tin_nhan[0] and "im lặng" in tin_nhan[0]
+
+    def test_cham_mot_chut_thi_khong_keu_oan(self):
+        ag, tin_nhan, asyncio = self._agent(now_offset_phut=20)
+        asyncio.run(ag.check_source_silence())
+        assert tin_nhan == [], "một cycle chậm bất thường không được làm chuông kêu"
+
+    def test_keu_dung_mot_lan_roi_bao_khi_chay_lai(self):
+        ag, tin_nhan, asyncio = self._agent(now_offset_phut=8 * 60)
+        asyncio.run(ag.check_source_silence())
+        asyncio.run(ag.check_source_silence())
+        assert len(tin_nhan) == 1, "không được nhắc lại mỗi 10 phút"
+        ag._mark_source_alive("nhatot")
+        asyncio.run(ag.check_source_silence())
+        assert len(tin_nhan) == 2 and "chạy lại" in tin_nhan[1]
+
+    def test_nguong_theo_chu_ky_tung_nguon(self):
+        ag, _, _ = self._agent(now_offset_phut=0)
+        gh = ag._silence_limits()
+        assert gh["nhatot"] == 30 * 60, "chu kỳ 5 phút → sàn 30 phút"
+        assert gh["muaban"] == 80 * 60, "chu kỳ 20 phút → 4 lần = 80 phút"
+
+
+class TestChuongKhongKeuOan:
+    """Chuông nền tảng đổi KHÔNG được kêu vì nhiễu nền.
+
+    Sự cố 16/09 11:11 — ngay cycle đầu sau khi bật chuông, nó nhắn Telegram
+    báo "batdongsan đổi cách hoạt động" trong khi batdongsan hoàn toàn bình
+    thường: 1 URL lỗi trang đầu, 3 URL còn lại đọc tốt, cycle về 26 tin và
+    gửi được 1 alert.
+
+    Đo trên log: "Không tìm thấy card" xảy ra 3-5 lần MỖI NGÀY suốt cả tuần
+    (10/09: 3, 11/09: 5, 12/09: 4, 13/09: 3, 14/09: 4, 15/09: 5). Ngưỡng 1
+    nghĩa là chuông kêu ~4 lần/ngày — vài hôm là không ai đọc nữa, đúng cái
+    bệnh mà nó sinh ra để chữa.
+    """
+
+    def _agent(self):
+        import asyncio
+        from orchestrator.agent import RealEstorkAgent
+
+        ag = RealEstorkAgent.__new__(RealEstorkAgent)
+        ag._platform_alerted = {}
+        tin_nhan = []
+
+        class _TG:
+            async def send_admin(self, text):
+                tin_nhan.append(text)
+
+        ag.telegram = _TG()
+        return ag, tin_nhan, asyncio
+
+    class _Spider:
+        def __init__(self, health):
+            self.cycle_health = health
+
+    def test_mot_trang_loi_le_giua_nhieu_trang_tot_thi_im(self):
+        """Tái hiện đúng cycle đã kêu oan 16/09."""
+        ag, tin_nhan, asyncio = self._agent()
+        sp = self._Spider({"list_pages_ok": 8, "list_no_cards": 1})
+        asyncio.run(ag._check_platform_change("batdongsan", sp))
+        assert tin_nhan == [], (
+            "1 trang hỏng / 8 trang tốt là nhiễu nền — kêu là hỏng cái chuông"
+        )
+
+    def test_gay_gan_het_thi_van_phai_keu(self):
+        """Cloudflare chặn hẳn (ca 17/08): không đọc được trang nào."""
+        ag, tin_nhan, asyncio = self._agent()
+        sp = self._Spider({"list_pages_ok": 0, "list_cf_blocked": 4})
+        asyncio.run(ag._check_platform_change("batdongsan", sp))
+        assert len(tin_nhan) == 1 and "tường chặn" in tin_nhan[0]
+
+    def test_mat_du_lieu_toan_bo_thi_keu(self):
+        """Đổi cấu trúc trang: mọi URL đều không tìm thấy khối dữ liệu."""
+        ag, tin_nhan, asyncio = self._agent()
+        sp = self._Spider({"list_pages_ok": 0, "list_no_cards": 4})
+        asyncio.run(ag._check_platform_change("batdongsan", sp))
+        assert len(tin_nhan) == 1 and "mất dữ liệu" in tin_nhan[0]
+
+    def test_trang_lap_keu_ngay_ca_khi_nhieu_trang_tot(self):
+        """Trang lặp là dấu hiệu riêng: 2 trang liên tiếp trùng khít từng ID
+        không thể là trục trặc thoáng qua. Ca muaban 16/09 có 3 URL, mỗi URL
+        đọc được trang 1 rồi phát hiện trang 2 trùng → pages_ok=3, lặp=3.
+        Nếu áp cùng luật 'hỏng nhiều hơn tốt' thì sẽ KHÔNG kêu — sai."""
+        ag, tin_nhan, asyncio = self._agent()
+        sp = self._Spider({"list_pages_ok": 3, "list_repeat_page": 3})
+        asyncio.run(ag._check_platform_change("muaban", sp))
+        assert len(tin_nhan) == 1 and "trang lặp" in tin_nhan[0]
+
+    def test_nhieu_nen_theo_ngay_that_khong_lam_chuong_keu(self):
+        """Replay 6 ngày log thật: mỗi ngày 3-5 lần mất card, xen giữa các
+        cycle bình thường. Không được kêu lần nào."""
+        ag, tin_nhan, asyncio = self._agent()
+        so_lan_mat_card_moi_ngay = [3, 5, 4, 3, 4, 5]
+        for so_lan in so_lan_mat_card_moi_ngay:
+            for _ in range(so_lan):
+                # mỗi lần là 1 cycle: 1 URL hỏng, phần còn lại đọc tốt
+                asyncio.run(ag._check_platform_change(
+                    "batdongsan", self._Spider({"list_pages_ok": 8, "list_no_cards": 1})
+                ))
+            # xen các cycle sạch
+            for _ in range(10):
+                asyncio.run(ag._check_platform_change(
+                    "batdongsan", self._Spider({"list_pages_ok": 12})
+                ))
+        assert tin_nhan == [], f"kêu oan {len(tin_nhan)} lần trong 6 ngày nhiễu nền"
+
+
+class TestTachMayGanKhoiNguoiDay:
+    """muaban gán lại dấu thời gian cho gần như toàn bộ tin trong khung
+    00:00-00:06 mỗi đêm (đo 2 đêm 17-19/09: 161/164 tin bị đổi dấu nằm trong
+    khung này; trang sâu bị quét sạch 60/60).
+
+    Hệ quả cũ: mọi tin đều được +10 "tin rất mới" — đo 16/09 thì 13/16 tin gửi
+    cho vợ có điểm đúng bằng ngưỡng 55, tức qua được nhờ điểm chấm trên dữ
+    liệu do máy muaban sinh ra.
+    """
+
+    def _tin(self, gio, phut):
+        from datetime import datetime, timedelta, timezone
+        from spiders.muaban import MuabanSpider
+        vn = timezone(timedelta(hours=7))
+        sp = MuabanSpider({"urls": ["https://muaban.net/x"]})
+        hom_nay = datetime.now(vn).replace(hour=gio, minute=phut, second=0, microsecond=0)
+        item = {
+            "id": 1, "title": "Cho thue mat bang Quan 1",
+            "publish_at": hom_nay.isoformat(),
+            "covers": [], "price": 20000000,
+            "locations_display": [{"name": "TP.HCM"}, {"name": "Quận 1"}, {"name": "P.1"}],
+            "url": "/x/1", "service_ids": [128],
+        }
+        return sp._parse_listing(item)
+
+    def test_dau_trong_luot_quet_nua_dem_thi_coi_nhu_chua_biet_tuoi(self):
+        for phut in (0, 3, 6, 10):
+            l = self._tin(0, phut)
+            assert l.manually_bumped is False, f"00:{phut:02d} phải là máy gán"
+            assert l.posted_at is None, f"00:{phut:02d}: tuổi tin phải là CHƯA BIẾT"
+            assert l.listing_age_hours is None
+
+    def test_dau_gio_ban_ngay_thi_la_nguoi_day(self):
+        for gio in (7, 12, 18, 22):
+            l = self._tin(gio, 30)
+            assert l.manually_bumped is True, f"{gio}h phải là người đẩy"
+            assert l.posted_at is not None, f"{gio}h: phải giữ tuổi tin"
+
+    def test_bien_11_phut_van_tinh_la_nguoi_day(self):
+        """Lượt quét đo được hết 4-7 phút; biên đặt 10 phút. 00:11 là ngoài biên."""
+        l = self._tin(0, 11)
+        assert l.manually_bumped is True
+
+    def test_tin_may_gan_khong_con_an_diem_tin_moi(self):
+        from pipeline.signals import SIGNAL_FUNCTIONS, SignalContext
+        l = self._tin(0, 2)
+        ctx = SignalContext.from_listing(l)
+        assert SIGNAL_FUNCTIONS["listing_very_fresh"](ctx) is False
+        assert SIGNAL_FUNCTIONS["listing_fresh"](ctx) is False
+        assert SIGNAL_FUNCTIONS["manually_bumped"](ctx) is False
+
+    def test_tin_nguoi_day_an_dung_signal_moi(self):
+        from pipeline.signals import SIGNAL_FUNCTIONS, SignalContext
+        l = self._tin(14, 0)
+        ctx = SignalContext.from_listing(l)
+        assert SIGNAL_FUNCTIONS["manually_bumped"](ctx) is True
+
+    def test_nguon_khac_muaban_khong_bi_anh_huong(self):
+        """Signal mới chỉ muaban set cờ; nguồn khác phải im."""
+        from pipeline.signals import SIGNAL_FUNCTIONS, SignalContext
+        from spiders.base import RawListing
+        l = RawListing(source="nhatot", source_id="1", source_url="u", title="t",
+                       description="", address="", district="Quận 1")
+        assert SIGNAL_FUNCTIONS["manually_bumped"](SignalContext.from_listing(l)) is False
+
+
+class TestChamLaiTinCuDuocDay:
+    """Lớp chống trùng loại tin theo source_id nên tin đã thấy không bao giờ
+    được xem lại. Với mặt bằng cho thuê thì đó là lỗ: chủ lấy lại được mặt
+    bằng sẽ đẩy tin CŨ lên tìm khách mới.
+
+    Đo 22/09 trên 100 tin trang 1-5: 21 tin được đẩy tay trong ngày, bot bỏ
+    qua cả 21 vì đã biết (8 đã gửi, 10 đã loại môi giới, 3 chưa đủ điểm).
+    """
+
+    def _agent(self, db_rows, hong=False):
+        from orchestrator.agent import RealEstorkAgent
+        ag = RealEstorkAgent.__new__(RealEstorkAgent)
+
+        class _Res:
+            def __init__(self, data): self.data = data
+
+        class _Q:
+            def __init__(self): self._ids = []
+            def select(self, *a, **k): return self
+            def eq(self, *a, **k): return self
+            def in_(self, col, ids): self._ids = ids; return self
+            def execute(self):
+                if hong:
+                    raise RuntimeError("mat ket noi")
+                return _Res([r for r in db_rows if r["source_id"] in self._ids])
+
+        class _DB:
+            class client:
+                @staticmethod
+                def table(name): return _Q()
+
+        ag.db = _DB()
+        return ag
+
+    def _tin(self, sid, gio_truoc, day_tay=True):
+        from datetime import datetime, timedelta, timezone
+        from spiders.base import RawListing
+        return RawListing(
+            source="muaban", source_id=sid, source_url="u", title="t",
+            description="", address="", district="Quận 1",
+            posted_at=datetime.now(timezone.utc) - timedelta(hours=gio_truoc),
+            manually_bumped=day_tay,
+        )
+
+    def test_tin_cu_co_dau_moi_hon_thi_cham_lai(self):
+        ag = self._agent([{"source_id": "A", "posted_at": "2026-09-20T00:00:00+00:00"}])
+        l = self._tin("A", 1)
+        assert [x.source_id for x in ag._tin_cu_vua_duoc_day([l], [])] == ["A"]
+
+    def test_dau_khong_doi_thi_khong_cham_lai(self):
+        """Chặn lặp: cùng một lượt đẩy chỉ được chấm lại ĐÚNG MỘT LẦN, nếu
+        không thì mỗi cycle 20 phút lại chấm lại toàn bộ."""
+        from datetime import datetime, timedelta, timezone
+        moc = datetime.now(timezone.utc) - timedelta(hours=1)
+        ag = self._agent([{"source_id": "A", "posted_at": moc.isoformat()}])
+        l = self._tin("A", 1)
+        l.posted_at = moc
+        assert ag._tin_cu_vua_duoc_day([l], []) == []
+
+    def test_tin_may_gan_khong_bao_gio_cham_lai(self):
+        ag = self._agent([{"source_id": "A", "posted_at": "2026-09-01T00:00:00+00:00"}])
+        l = self._tin("A", 1, day_tay=False)
+        l.posted_at = None
+        assert ag._tin_cu_vua_duoc_day([l], []) == []
+
+    def test_tin_moi_tinh_khong_bi_tinh_hai_lan(self):
+        """Tin đã nằm trong danh sách 'mới' thì không được gom lại lần nữa."""
+        ag = self._agent([{"source_id": "A", "posted_at": "2026-09-01T00:00:00+00:00"}])
+        l = self._tin("A", 1)
+        assert ag._tin_cu_vua_duoc_day([l], [l]) == []
+
+    def test_khong_hoi_sinh_tin_da_bi_loai_vi_moi_gioi(self):
+        """Lớp chặn môi giới đếm số tin cùng tài khoản trong CÙNG MẺ CÀO, nên
+        nó phụ thuộc kích thước mẻ. Mẻ 16/09 có 1040 tin → thấy tài khoản có
+        5+ tin → loại đúng. Mẻ bây giờ 80 tin → cùng tài khoản chỉ lộ 1-2 tin
+        → lớp chặn không fire. Chấm lại trong mẻ nhỏ là vứt bỏ bằng chứng thu
+        được từ mẻ lớn. Ca thật: tin 70746888 (22/09) chấm lại ra 65 điểm và
+        suýt được gửi, dù trước đó đã bị loại vì môi giới."""
+        ag = self._agent([{"source_id": "70746888",
+                           "posted_at": "2026-09-01T00:00:00+00:00",
+                           "status": "auto_vetoed_broker"}])
+        l = self._tin("70746888", 1)
+        assert ag._tin_cu_vua_duoc_day([l], []) == []
+
+    def test_khong_cham_lai_tin_da_gui(self):
+        ag = self._agent([{"source_id": "A", "posted_at": "2026-09-01T00:00:00+00:00",
+                           "status": "alerted_telegram"}])
+        assert ag._tin_cu_vua_duoc_day([self._tin("A", 1)], []) == []
+
+    def test_van_cham_lai_tin_chi_thieu_diem(self):
+        """Đây mới là nhóm cần xem lại: đã chấm, chưa đủ điểm, chưa có phán
+        quyết môi giới. Đo 22/09: 3/21 tin được đẩy tay thuộc nhóm này."""
+        ag = self._agent([{"source_id": "A", "posted_at": "2026-09-01T00:00:00+00:00",
+                           "status": "new"}])
+        assert [x.source_id for x in ag._tin_cu_vua_duoc_day([self._tin("A", 1)], [])] == ["A"]
+
+    def test_tin_chua_tung_co_trong_db_thi_khong_phai_tin_cu(self):
+        ag = self._agent([])
+        l = self._tin("moi", 1)
+        assert ag._tin_cu_vua_duoc_day([l], []) == []
+
+    def test_tra_cuu_hong_thi_bo_qua_chu_khong_cham_lai_tat_ca(self):
+        """Tra cứu hỏng mà đoán bừa 'có đẩy mới' thì mỗi cycle chấm lại sạch."""
+        ag = self._agent([], hong=True)
+        l = self._tin("A", 1)
+        assert ag._tin_cu_vua_duoc_day([l], []) == []
+
+
+class TestSoSachHongKhongDuocKeoAlertChetTheo:
+    """Ghi DB hỏng thì tin VẪN phải tới tay vợ.
+
+    Sự cố 2026-10-04: org Supabase cạn quota egress (project kia đốt ~1,4 GB
+    /ngày), mọi lệnh đọc/ghi trả 402. Bot còn sống, còn crawl, còn chấm điểm —
+    nhưng có một dòng `if not saved: return "db_error"` khiến tin nào ghi hỏng
+    là bị bỏ luôn, không gửi. Mất 7 tin đã đủ điều kiện gửi trong 4,5 giờ đầu.
+
+    Alert là sản phẩm, DB chỉ là sổ sách. Sổ sách hỏng không được phép kéo
+    sản phẩm chết theo.
+    """
+
+    def _agent(self, tmp_path, ghi_duoc: bool):
+        import types
+        from unittest.mock import AsyncMock, MagicMock
+
+        from orchestrator.agent import RealEstorkAgent
+
+        ag = RealEstorkAgent.__new__(RealEstorkAgent)
+        ag.dry_run = False
+        ag._spool_path = tmp_path / "pending.jsonl"
+        ag.db = MagicMock()
+        ag.db.get_listing_status.return_value = None
+        ag.db.upsert_listing.return_value = {"id": "uuid-1"} if ghi_duoc else None
+        ag.ai = MagicMock()
+        ag.ai.analyze_listing = AsyncMock(return_value=None)
+        ag.classifier = MagicMock()
+        ag.classifier.classify.return_value = types.SimpleNamespace(
+            score=80, label="chinh_chu", ai_reasoning=None, signals_fired={}
+        )
+        ag.classifier.alert_skip_reason.return_value = None
+        ag.classifier.non_rental_verdict.return_value = ""
+        ag.telegram = MagicMock()
+        ag.telegram.send_listing_alert = AsyncMock(return_value=True)
+        return ag
+
+    def _tin(self):
+        import types
+
+        l = types.SimpleNamespace(
+            source="nhatot", source_id="TEST123", phone="", contact_name="Chủ nhà",
+            same_session_account_count=1, poster_total_listings=1, address="Quận 1",
+            listing_age_hours=1.0, title="Cho thuê mặt bằng", description="chính chủ",
+            price_vnd_monthly=30_000_000,
+        )
+        l.to_dict = lambda: {"source": "nhatot", "source_id": "TEST123"}
+        return l
+
+    def test_ghi_db_hong_van_gui_alert(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "111")
+        monkeypatch.setenv("TELEGRAM_GROUP_CHAT_ID", "222")
+        ag = self._agent(tmp_path, ghi_duoc=False)
+        ket_qua = asyncio.run(ag._process_listing(self._tin()))
+        assert ket_qua == "alerted"
+        assert ag.telegram.send_listing_alert.await_count == 2
+
+    def test_ghi_db_duoc_thi_hanh_vi_khong_doi(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "111")
+        monkeypatch.setenv("TELEGRAM_GROUP_CHAT_ID", "222")
+        ag = self._agent(tmp_path, ghi_duoc=True)
+        ket_qua = asyncio.run(ag._process_listing(self._tin()))
+        assert ket_qua == "alerted"
+        assert ag.telegram.send_listing_alert.await_count == 2
+        ag.db.update_listing_status.assert_called_once_with("uuid-1", "alerted_telegram")
+
+    def test_tin_ghi_hong_duoc_spool_kem_trang_thai_da_gui(self, tmp_path, monkeypatch):
+        """Hai dòng: 'new' rồi 'alerted_telegram'. Nạp lại theo thứ tự thì
+        dòng sau đè dòng trước, nên tin mang đúng trạng thái đã gửi."""
+        monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "111")
+        monkeypatch.setenv("TELEGRAM_GROUP_CHAT_ID", "222")
+        ag = self._agent(tmp_path, ghi_duoc=False)
+        asyncio.run(ag._process_listing(self._tin()))
+
+        dong = [json.loads(d) for d in ag._spool_path.read_text(encoding="utf-8").splitlines() if d.strip()]
+        assert [d.get("status") for d in dong] == ["new", "alerted_telegram"]
+        assert all(d["source_id"] == "TEST123" for d in dong)
+
+    def test_ghi_db_duoc_thi_khong_spool(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "111")
+        monkeypatch.setenv("TELEGRAM_GROUP_CHAT_ID", "222")
+        ag = self._agent(tmp_path, ghi_duoc=True)
+        asyncio.run(ag._process_listing(self._tin()))
+        assert not ag._spool_path.exists()

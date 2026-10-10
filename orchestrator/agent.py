@@ -9,6 +9,7 @@ Flow per cycle:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from collections import Counter
@@ -48,6 +49,19 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _doc_thoi_diem(raw: Any) -> datetime | None:
+    """Đọc mốc thời gian ISO từ DB về datetime có múi giờ. Hỏng thì None."""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _format_uptime(seconds: float) -> str:
     """Format uptime as '2h 15m' / '3d 4h' / '45m 12s'."""
     s = int(seconds)
@@ -73,7 +87,6 @@ _REASON_LABELS = {
     "gia_thap": "giá thấp",
     "ngoai_quan": "ngoài quận",
     "pho_phu": "phố phụ",
-    "db_error": "lỗi DB",
     "telegram_fail": "lỗi Telegram",
     "chua_xac_minh_nguoi_ban": "hoãn — chưa đọc được số tin đăng",
 }
@@ -106,6 +119,25 @@ def _is_cert_error(err_msg: str) -> bool:
     """Lỗi bắt tay TLS/chứng chỉ? (khác hẳn 'chưa có mạng')."""
     low = err_msg.lower()
     return any(m in low for m in _CERT_ERROR_MARKERS)
+
+
+# Supabase cạn quota → khoá cả organization, mọi lệnh REST trả 402 kèm
+# "Service for this project is restricted due to the following violations:
+#  exceed_egress_quota". Không phải lỗi config, không sửa được từ máy mình —
+# chỉ hết khi sang kỳ billing mới hoặc nâng plan.
+_QUOTA_ERROR_MARKERS = (
+    "exceed_egress_quota",
+    "exceed_db_size_quota",
+    "service for this project is restricted",
+    "'code': 402",
+    '"code": 402',
+)
+
+
+def _is_quota_error(err_msg: str) -> bool:
+    """Supabase khoá vì hết quota? (khác hẳn lỗi config như sai key/RLS)."""
+    low = err_msg.lower()
+    return any(m in low for m in _QUOTA_ERROR_MARKERS)
 
 
 # Hỏi nhiều máy chủ giờ: đo thực tế thấy pool.ntp.org rớt gói ngay lần gọi đầu
@@ -154,6 +186,8 @@ _NHATOT_CYCLE_EXCLUDE = ["batdongsan", "muaban", "facebook_groups"]
 # Chuông "đói tin" batdongsan: số cycle liên tiếp 0 trang đọc được trước khi báo
 # Telegram admin (6 cycle × 20 phút ≈ 2h — đủ chậm để bỏ qua trục trặc thoáng qua).
 _BDS_STARVE_CYCLES = 6
+# Supabase/PostgREST gioi han do dai URL cho bo loc in_() -> chia lo.
+_MUABAN_TRA_CUU_LO = 50
 
 # Hàng chờ duyệt tay: số tin tối đa liệt kê trong 1 tin nhắn. Vượt ngưỡng →
 # gửi cảnh báo hệ thống thay vì liệt kê, vì lúc đó vấn đề là batdongsan chặn
@@ -221,6 +255,10 @@ class RealEstorkAgent:
         self._fb_capture_silent = False
         # Lúc gần nhất kêu chuông "không ghi được DB" (None = đang bình thường).
         self._write_alarm_at: float | None = None
+        # Tin ghi DB hỏng được append vào đây để nạp lại khi DB sống lại.
+        self._spool_path = Path(".db_spool/pending_listings.jsonl")
+        # True = Supabase đang khoá vì hết quota; bot chạy chế độ chỉ gửi alert.
+        self._db_degraded = False
         # Batdongsan: tin đã crawl nhưng chưa đọc được số tin đăng của người bán.
         # source_id → (listing, số lần đã thử). Cycle sau đọc lại trang chi tiết.
         # Cố ý KHÔNG lưu DB khi đang hoãn — bot restart thì tin quay lại như tin mới.
@@ -233,6 +271,17 @@ class RealEstorkAgent:
         self._bds_day_health: Counter = Counter()
         # Tin bỏ cuộc trong cycle này → gộp 1 tin nhắn "cần duyệt tay" cuối cycle.
         self._bds_review_batch: list[Any] = []
+        # Vòng nghe nút 👍/👎 (long polling) — tạo trong start(), huỷ khi tắt bot.
+        self._feedback_task: Any = None
+        # ── Chuông "nền tảng đổi cách hoạt động" (mọi nguồn) ──────────────
+        # nguồn → mô tả sự cố đang mở. Có mặt = đã kêu rồi, đừng kêu lại.
+        self._platform_alerted: dict[str, str] = {}
+        # nguồn → thời điểm cycle gần nhất CHẠY XONG. Dùng cho chuông im lặng.
+        # Ca 14/09: vòng Chợ Tốt treo giữa chừng lúc 04:20, scheduler chỉ cho
+        # mỗi job 1 lượt chạy nên 8 tiếng sau vẫn không ai được báo — bot vẫn
+        # sống, 2 nguồn kia vẫn chạy, mọi chuông hiện có đều thấy "bình thường".
+        self._source_last_ok: dict[str, float] = {}
+        self._silence_alerted: set[str] = set()
         # Spiders can run concurrently using ThreadPoolExecutor and scrapling StealthyFetcher.
 
         # Load schedule config
@@ -244,9 +293,55 @@ class RealEstorkAgent:
         # CHƯA từng alert (vd toàn bộ tin muaban trước 2026-09-08) không được lớp
         # "đã alert thì thôi" bảo vệ — cache mỏng là gửi lại hàng loạt.
         recent = self.db.get_recent_listings(limit=12000)
+        if not recent:
+            # Không đọc được DB (quota cạn → 402, hoặc mạng chết). Seed rỗng nghĩa
+            # là MỌI tin thành "tin mới" → gửi lại hàng loạt. Log dưới máy có ghi
+            # source_id của từng tin đã thấy, mỏng hơn DB nhưng đủ làm lưới đỡ.
+            recent = self._seed_source_id_tu_log()
+            logger.warning(
+                f"[orchestrator] ⚠️  Không đọc được DB — seed dedup từ log dưới máy: "
+                f"{len(recent)} source ID. Mỏng hơn seed từ DB, tin cũ hơn log có thể gửi lại."
+            )
         self.dedup.seed_from_db(recent)
 
         logger.info("[orchestrator] ✨ Ready.")
+
+    def _seed_source_id_tu_log(self, so_file: int = 12) -> list[dict]:
+        """Gom source_id đã từng thấy từ log dưới máy, làm seed dedup dự phòng.
+
+        Chỉ dùng khi đọc DB thất bại. Trả về đúng dạng `seed_from_db` nhận, nhưng
+        mỗi dòng chỉ có source + source_id — log không ghi content_hash/SĐT/địa chỉ
+        nên các lớp chống trùng phụ không được seed. Lớp theo source_id là lớp
+        chính nên vẫn chặn được phần lớn.
+
+        Hở đã biết: tin cũ hơn tầm log giữ (hiện ~9 ngày) không có trong đây. Phần
+        lớn được bộ lọc tuổi tin chặn, trừ tin Facebook thường không parse được tuổi.
+        """
+        import re
+
+        mau = re.compile(
+            r"Source ID duplicate: ([a-z_]+):([A-Za-z0-9_\-]+)"
+            r"|\[orchestrator\] ([a-z_]+)/([A-Za-z0-9_\-]+):"
+        )
+        thay: set[tuple[str, str]] = set()
+        try:
+            files = sorted(Path("logs").glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError as e:
+            logger.warning(f"[orchestrator] Không đọc được thư mục log: {e}")
+            return []
+
+        for f in files[:so_file]:
+            try:
+                with f.open(encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        m = mau.search(line)
+                        if m:
+                            src, sid = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+                            thay.add((src, sid))
+            except OSError as e:
+                logger.warning(f"[orchestrator] Bỏ qua log {f.name}: {e}")
+
+        return [{"source": s, "source_id": i} for s, i in thay]
 
     def _load_yaml(self, path: str) -> dict:
         try:
@@ -338,6 +433,38 @@ class RealEstorkAgent:
                 status="failed",
                 error_message=str(e),
             )
+        finally:
+            # Trong finally: cycle thoát sớm (0 tin, 0 tin mới) hay lỗi giữa
+            # chừng thì vẫn phải tính là "đã chạy xong một lượt". Nếu không,
+            # chuông im lặng sẽ kêu oan mỗi lần nguồn đơn giản là không có tin.
+            self._mark_source_alive("nhatot")
+            sp = self.spider_engine.get_spider("nhatot")
+            if sp is not None:
+                await self._check_platform_change("nhatot", sp)
+
+    def _spool_listing(self, listing_data: dict) -> None:
+        """Ghi tạm 1 tin ra file khi Supabase không nhận được lệnh ghi.
+
+        Alert là sản phẩm, DB chỉ là sổ sách — mất chỗ ghi không được phép
+        chặn việc gửi tin cho vợ. Sự cố 2026-10-04: org Supabase cạn quota
+        egress, mọi lệnh đọc/ghi trả 402 suốt nhiều ngày; trước đó bot bỏ
+        luôn tin nào ghi hỏng nên tin chính chủ rơi im lặng.
+
+        File ghi theo dạng mỗi dòng một JSON, nạp lại theo đúng thứ tự —
+        upsert khoá trên (source, source_id) nên dòng sau đè dòng trước,
+        tin được gửi alert sẽ có thêm một dòng mang status mới.
+        """
+        try:
+            self._spool_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._spool_path.open("a", encoding="utf-8") as f:
+                dong = json.dumps(listing_data, ensure_ascii=False, default=str)
+                # json.dumps để nguyên U+2028/U+2029, mà splitlines() của Python
+                # lại cắt dòng ở đó → bản ghi bị xé đôi khi đọc lại. Escape để
+                # file an toàn với mọi cách đọc, không chỉ cách của bot.
+                dong = dong.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+                f.write(dong + "\n")
+        except Exception as e:
+            logger.warning(f"[orchestrator] spool thất bại: {type(e).__name__}: {e}")
 
     async def _process_listing(
         self,
@@ -447,6 +574,15 @@ class RealEstorkAgent:
             "status": existing_status if existing_status and existing_status.startswith("alerted") else "new",
         })
         saved = self.db.upsert_listing(listing_data)
+        if not saved:
+            # DB không nhận lệnh ghi → ghi tạm ra file rồi ĐI TIẾP. Trước đây
+            # chỗ này `return "db_error"`, nghĩa là sổ sách hỏng thì tin chính
+            # chủ cũng không được gửi — mất 7 tin trong 4,5h ngày 2026-10-04.
+            self._spool_listing(listing_data)
+            logger.warning(
+                f"[orchestrator] {listing.source}/{listing.source_id}: ghi DB hỏng "
+                f"— đã spool ra {self._spool_path}, vẫn xét gửi alert"
+            )
 
         # Update phone frequency
         if listing.phone:
@@ -457,9 +593,6 @@ class RealEstorkAgent:
         if skip_reason:
             return skip_reason
 
-        if not saved:
-            return "db_error"
-
         # BOOST DEDUP: already alerted in a previous session
         if existing_status and existing_status.startswith("alerted"):
             logger.info(
@@ -468,7 +601,8 @@ class RealEstorkAgent:
             )
             return "boost_dedup"
 
-        listing_id = saved.get("id", "")
+        # DB chết thì không có id — alert vẫn gửi, chỉ mất 2 nút 👍/👎 dưới tin.
+        listing_id = saved.get("id", "") if saved else ""
 
         # Collect unique chat IDs (admin + group, deduped)
         admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
@@ -555,7 +689,14 @@ class RealEstorkAgent:
                 logger.info(f"[orchestrator] Alert sent to chat {chat_id} (topic {target_thread})")
 
         if alert_sent:
-            self.db.update_listing_status(listing_id, "alerted_telegram")
+            if listing_id:
+                self.db.update_listing_status(listing_id, "alerted_telegram")
+            else:
+                # Chưa có row trong DB → ghi thêm một dòng spool mang status mới.
+                # Nạp lại theo thứ tự thì dòng này đè dòng "new" ở trên, nên sau
+                # khi DB sống lại tin vẫn mang đúng trạng thái đã gửi.
+                listing_data["status"] = "alerted_telegram"
+                self._spool_listing(listing_data)
 
         # Alert vợ (Zalo) - TẠM TẮT ĐỂ TEST TELEGRAM
         # if self.classifier.should_alert_wife(result, listing):
@@ -689,6 +830,10 @@ class RealEstorkAgent:
                 error_message=str(e),
             )
             await self._send_bds_review_batch(spider)
+        finally:
+            self._mark_source_alive("batdongsan")
+            if spider is not None:
+                await self._check_platform_change("batdongsan", spider)
 
     def _resolve_bds_pending(self, pending: list[tuple[Any, int]]) -> list[Any]:
         """
@@ -774,6 +919,159 @@ class RealEstorkAgent:
             f"/{health.get('detail_cf', 0)}/{health.get('detail_unreadable', 0)}"
         )
 
+    # =========================================================
+    # CHUÔNG "NỀN TẢNG ĐỔI CÁCH HOẠT ĐỘNG" — dùng chung mọi nguồn
+    # =========================================================
+
+    async def _check_platform_change(self, source: str, spider: Any) -> None:
+        """Nền tảng đổi thứ gì đó làm hỏng việc cào tin → nhắn Telegram admin.
+
+        Đọc bộ đếm sức khoẻ spider tự ghi trong cycle vừa rồi. Mỗi dấu hiệu
+        ứng với một kiểu đổi khác nhau, nên tin nhắn nói thẳng luôn phải đi
+        xem chỗ nào:
+
+          trang lặp   → nền tảng bỏ qua tham số phân trang (ca muaban 16/09)
+          mất dữ liệu → nền tảng đổi cấu trúc trang
+          tường chặn  → nền tảng siết chống bot (ca batdongsan 17/08)
+          mã lỗi      → đổi đường dẫn hoặc chặn thẳng
+
+        Chỉ kêu MỘT lần cho mỗi sự cố đang mở, và báo lại khi hồi phục — nếu
+        không thì mỗi cycle một tin nhắn, vài tiếng sau không ai đọc nữa.
+
+        NGƯỠNG KÊU — đo trên log thật trước khi đặt:
+        "Không tìm thấy card" của batdongsan xảy ra 3-5 lần MỖI NGÀY suốt cả
+        tuần (10/09: 3, 11/09: 5, 12/09: 4, 13/09: 3, 14/09: 4, 15/09: 5) —
+        đó là nhiễu nền, một trang lỗi lẻ giữa hàng chục trang đọc tốt. Bản
+        đầu của chuông này đặt ngưỡng 1 nên kêu oan ngay cycle đầu sau khi
+        bật (16/09 11:11): cycle đó 1 URL hỏng, 3 URL còn lại chạy bình
+        thường. Chuông kêu 4 lần/ngày thì chỉ vài hôm là không ai đọc nữa.
+
+        Nên chia hai loại:
+          • trang lặp → kêu từ lần đầu. Hai trang liên tiếp trùng khít từng
+            ID không thể là trục trặc thoáng qua, và nó đã chặn crawl lại rồi.
+          • ba dấu hiệu còn lại → chỉ kêu khi số trang hỏng NHIỀU HƠN số
+            trang đọc được. Nền tảng đổi thật thì gãy gần hết, không gãy lẻ tẻ.
+
+        Đánh đổi đã biết: hỏng một phần (vài URL chết, phần còn lại sống) sẽ
+        KHÔNG kêu ở đây. Lưới đỡ là chuông đói tin và chuông nguồn im lặng —
+        hỏng kéo dài kiểu gì cũng rơi vào một trong hai cái đó.
+        """
+        health = getattr(spider, "cycle_health", {}) or {}
+        pages_ok = health.get("list_pages_ok", 0)
+
+        trang_lap = health.get("list_repeat_page", 0)
+        # `list_no_cards` là tên cũ của batdongsan, cùng nghĩa list_no_data.
+        gay_le = [
+            ("mất dữ liệu", health.get("list_no_data", 0) + health.get("list_no_cards", 0),
+             "không tìm thấy khối dữ liệu trong trang — nền tảng đổi cấu trúc"),
+            ("tường chặn", health.get("list_cf_blocked", 0),
+             "dính tường chặn bot — nền tảng siết chống bot"),
+            ("mã lỗi", health.get("list_http_error", 0),
+             "nền tảng trả mã lỗi — có thể đổi đường dẫn"),
+        ]
+        tong_gay = sum(n for _, n, _ in gay_le)
+
+        hit = []
+        if trang_lap > 0:
+            hit.append(("trang lặp", trang_lap,
+                        "nền tảng bỏ qua tham số phân trang — bot chỉ còn thấy trang đầu"))
+        if tong_gay > pages_ok:
+            hit.extend((name, n, why) for name, n, why in gay_le if n > 0)
+
+        if not hit:
+            if source in self._platform_alerted:
+                truoc = self._platform_alerted.pop(source)
+                await self.telegram.send_admin(
+                    f"✅ <b>{source} hoạt động lại bình thường</b>\n"
+                    f"Sự cố trước đó: {truoc}\n"
+                    f"Cycle vừa rồi đọc được {pages_ok} trang, không còn dấu hiệu lạ."
+                )
+            return
+
+        mo_ta = ", ".join(f"{name} ×{n}" for name, n, _ in hit)
+        # Cùng một sự cố đang mở thì im, đừng nhắc lại mỗi cycle.
+        if self._platform_alerted.get(source) == mo_ta:
+            return
+        self._platform_alerted[source] = mo_ta
+
+        chan_doan = "\n".join(f"  • {name}: {why}" for name, _, why in hit)
+        await self.telegram.send_admin(
+            f"🚨 <b>{source} — nền tảng có vẻ đã đổi cách hoạt động</b>\n"
+            f"Dấu hiệu: {mo_ta}\n"
+            f"{chan_doan}\n"
+            f"Cycle vừa rồi đọc được {pages_ok} trang danh sách."
+        )
+        logger.warning(
+            f"[orchestrator] 🚨 {source}: dấu hiệu nền tảng đổi — {mo_ta}"
+        )
+
+    def _mark_source_alive(self, source: str) -> None:
+        """Đánh dấu nguồn vừa chạy xong một cycle. Gọi ở CUỐI mỗi cycle."""
+        self._source_last_ok[source] = time.time()
+
+    def _silence_limits(self) -> dict[str, float]:
+        """nguồn → số giây được phép im lặng, = 4 lần chu kỳ, tối thiểu 30 phút."""
+        lich = self._schedule_config.get("schedules", {})
+        cap = {
+            "nhatot": "nhatot_cycle",
+            "muaban": "muaban_cycle",
+            "batdongsan": "batdongsan_cycle",
+        }
+        out: dict[str, float] = {}
+        for source, job in cap.items():
+            cfg = lich.get(job, {})
+            if not cfg.get("enabled", True):
+                continue
+            phut = float(cfg.get("interval_minutes", 20))
+            out[source] = max(phut * 4 * 60, 30 * 60)
+        return out
+
+    async def check_source_silence(self) -> None:
+        """Nguồn nào quá lâu không chạy xong cycle nào → nhắn Telegram admin.
+
+        Khác chuông "đói tin" ở chỗ: đói tin là cycle CÓ chạy nhưng về tay
+        không. Còn cái này bắt ca cycle không chạy nữa — treo giữa chừng,
+        hoặc job chết lặng.
+
+        Ca 14/09: vòng Chợ Tốt treo lúc 04:20 khi đang tải một trang, không
+        lỗi, không hết giờ. Scheduler chỉ cho mỗi job một lượt chạy cùng lúc
+        nên ~97 lượt sau đó đều bị bỏ qua. 8 tiếng không một tin Chợ Tốt nào,
+        và không cơ chế nào hiện có phát hiện ra — vì bot vẫn sống, DB vẫn
+        ghi được, hai nguồn kia vẫn chạy.
+
+        Ngưỡng = 4 lần chu kỳ đã đặt của nguồn đó (tối thiểu 30 phút), đủ
+        rộng để một cycle chậm bất thường không làm chuông kêu oan.
+        """
+        now = time.time()
+        for source, gioi_han in self._silence_limits().items():
+            moc = self._source_last_ok.get(source)
+            if moc is None:
+                # Chưa từng chạy xong lần nào kể từ lúc bot bật — tính từ lúc bật.
+                moc = self._start_time
+            im_lang = now - moc
+
+            if im_lang <= gioi_han:
+                if source in self._silence_alerted:
+                    self._silence_alerted.discard(source)
+                    await self.telegram.send_admin(
+                        f"✅ <b>{source} chạy lại rồi</b> — vừa xong một cycle."
+                    )
+                continue
+
+            if source in self._silence_alerted:
+                continue
+            self._silence_alerted.add(source)
+            await self.telegram.send_admin(
+                f"🚨 <b>{source} im lặng {_format_uptime(im_lang)}</b>\n"
+                f"Không cycle nào chạy xong trong khi lẽ ra phải xong mỗi "
+                f"{int(gioi_han / 4 / 60)} phút.\n"
+                f"Nhiều khả năng một cycle treo giữa chừng và chặn mọi lượt sau."
+            )
+            logger.warning(
+                f"[orchestrator] 🚨 {source} im lặng {_format_uptime(im_lang)} — "
+                f"nghi cycle treo"
+            )
+
     async def _check_bds_starvation(self, spider: Any) -> None:
         """
         Chuông "đói tin": _BDS_STARVE_CYCLES cycle liên tiếp không đọc được trang
@@ -844,6 +1142,95 @@ class RealEstorkAgent:
     # MUABAN CYCLE (separate — heavy volume, 15-20 min interval)
     # =========================================================
 
+    def _tin_cu_vua_duoc_day(self, raw_listings: list[Any], da_moi: list[Any]) -> list[Any]:
+        """Tin bot ĐÃ BIẾT nhưng vừa được người đẩy lên lại → đem chấm lại.
+
+        Vì sao cần: lớp chống trùng loại tin theo source_id, nên tin nào bot
+        từng thấy sẽ không bao giờ được xem lại. Với sàn rao vặt thường thì
+        đúng — nội dung không đổi thì điểm cũng không đổi. Nhưng với mặt bằng
+        cho thuê, việc CHỦ ĐẨY LẠI TIN chính là tin tức: mặt bằng vừa được trả,
+        chủ đẩy tin cũ lên tìm khách mới.
+
+        Đo 22/09 trên 100 tin ở trang 1-5: 21 tin được đẩy tay trong ngày, và
+        bot bỏ qua cả 21 vì đã biết. Trong đó 8 tin đã gửi rồi (bỏ qua là
+        đúng), 10 tin đã loại vì môi giới (cũng đúng), còn 3 tin từng chấm
+        nhưng chưa đủ điểm — đó là nhóm đáng xem lại.
+
+        Chặn lặp: chỉ lấy tin có dấu MỚI HƠN dấu đang lưu trong DB. Chấm xong
+        thì upsert ghi đè dấu mới, nên lần sau không kích hoạt lại. Mỗi lượt
+        đẩy vì vậy chỉ sinh đúng một lần chấm lại.
+
+        Chặn spam: không cần làm gì thêm — _process_listing đã có sẵn lớp
+        "đã gửi rồi thì thôi" (BOOST DEDUP), nên tin từng alert sẽ không bị
+        gửi lại dù được chấm lại.
+        """
+        id_moi = {l.source_id for l in da_moi}
+        ung_vien = [
+            l for l in raw_listings
+            if getattr(l, "manually_bumped", False)
+            and l.source_id not in id_moi
+            and getattr(l, "posted_at", None) is not None
+        ]
+        if not ung_vien:
+            return []
+
+        dau_cu: dict[str, Any] = {}
+        trang_thai_cu: dict[str, str] = {}
+        ids = [str(l.source_id) for l in ung_vien]
+        try:
+            for i in range(0, len(ids), _MUABAN_TRA_CUU_LO):
+                res = (
+                    self.db.client.table("listings")
+                    .select("source_id,posted_at,status")
+                    .eq("source", "muaban")
+                    .in_("source_id", ids[i:i + _MUABAN_TRA_CUU_LO])
+                    .execute()
+                )
+                for row in res.data or []:
+                    sid = str(row["source_id"])
+                    dau_cu[sid] = _doc_thoi_diem(row.get("posted_at"))
+                    trang_thai_cu[sid] = str(row.get("status") or "")
+        except Exception as e:
+            # Tra cứu hỏng thì bỏ qua lượt chấm lại — KHÔNG đoán bừa là "có
+            # đẩy mới", vì đoán sai sẽ chấm lại toàn bộ mỗi cycle.
+            logger.warning(
+                f"[orchestrator] tra dấu thời gian cũ (muaban) lỗi: "
+                f"{type(e).__name__}: {e}"
+            )
+            return []
+
+        can_cham_lai = []
+        for l in ung_vien:
+            sid = str(l.source_id)
+            if sid not in dau_cu:
+                continue  # chưa có trong DB thì không phải "tin cũ"
+
+            # ── KHÔNG chấm lại tin đã có phán quyết ────────────────────────
+            # Bỏ qua tin từng bị loại vì môi giới. Lý do không hiển nhiên:
+            # lớp chặn môi giới đếm "tài khoản này đăng bao nhiêu tin trong
+            # CÙNG MẺ CÀO", nên nó phụ thuộc kích thước mẻ. Hồi 16/09 bot cào
+            # 1040 tin một mẻ → thấy tài khoản có 5+ tin → loại đúng. Mẻ bây
+            # giờ chỉ 80 tin, cùng tài khoản chỉ lộ 1-2 tin → lớp chặn không
+            # fire nữa. Chấm lại trong mẻ nhỏ tức là VỨT BỎ bằng chứng môi
+            # giới thu được từ mẻ lớn. Đo 22/09: tin 70746888 đúng kiểu này —
+            # từng bị loại vì môi giới, chấm lại thành 65 điểm và sẽ được gửi.
+            #
+            # Môi giới không trở thành chính chủ chỉ vì họ bấm đẩy tin.
+            #
+            # Tin đã gửi rồi cũng bỏ qua ở đây cho đỡ tốn công — _process_listing
+            # vẫn có lớp chặn riêng, đây chỉ là chặn sớm.
+            tt = trang_thai_cu.get(sid, "")
+            if tt.startswith("alerted") or tt in ("auto_vetoed_broker", "unverified_poster"):
+                continue
+
+            cu = dau_cu[sid]
+            moi = l.posted_at
+            if moi.tzinfo is None:
+                moi = moi.replace(tzinfo=timezone.utc)
+            if cu is None or (moi - cu).total_seconds() > 60:
+                can_cham_lai.append(l)
+        return can_cham_lai
+
     async def run_muaban_cycle(self) -> None:
         """
         Dedicated cycle for muaban.net.
@@ -873,13 +1260,25 @@ class RealEstorkAgent:
 
             new_listings = self.dedup.filter_new(raw_listings)
             logger.info(f"[orchestrator] {len(new_listings)} new muaban listings after dedup")
-            if not new_listings:
+
+            # Tin cũ vừa được người đẩy lên lại cũng đáng xem lại — xem
+            # _tin_cu_vua_duoc_day. Ghép vào cùng luồng xử lý; lớp "đã gửi rồi
+            # thì thôi" trong _process_listing lo phần chống gửi lặp.
+            cham_lai = self._tin_cu_vua_duoc_day(raw_listings, new_listings)
+            if cham_lai:
+                logger.info(
+                    f"[orchestrator] {len(cham_lai)} tin muaban cũ vừa được đẩy tay "
+                    f"— chấm lại"
+                )
+
+            can_xu_ly = new_listings + cham_lai
+            if not can_xu_ly:
                 return
 
             processed_count = 0
             alerted_count = 0
             skip_reasons: Counter = Counter()
-            for listing in new_listings:
+            for listing in can_xu_ly:
                 try:
                     reason = await self._process_listing(listing)
                     processed_count += 1
@@ -893,7 +1292,8 @@ class RealEstorkAgent:
             duration = time.time() - cycle_start
             skip_summary = _format_skip_summary(skip_reasons)
             logger.info(
-                f"[orchestrator] ✅ Muaban cycle done: {len(new_listings)} new, "
+                f"[orchestrator] ✅ Muaban cycle done: {len(new_listings)} new"
+                f"{f' + {len(cham_lai)} đẩy tay' if cham_lai else ''}, "
                 f"{processed_count} processed, {alerted_count} sent to Telegram"
                 f"{' | ' + skip_summary if skip_reasons else ''} | {duration:.1f}s"
             )
@@ -911,6 +1311,10 @@ class RealEstorkAgent:
                 status="failed",
                 error_message=str(e),
             )
+        finally:
+            self._mark_source_alive("muaban")
+            if spider is not None:
+                await self._check_platform_change("muaban", spider)
 
     # =========================================================
     # FACEBOOK GROUPS CYCLE (PUSH/drain — userscript → ingest queue)
@@ -1204,8 +1608,10 @@ class RealEstorkAgent:
             chi_tiet += f"\n\nChẩn đoán: {self._diagnose_tls_failure()}"
         await self._raise_alarm("BOT KHÔNG GHI ĐƯỢC DỮ LIỆU", chi_tiet)
 
-    async def collect_feedback(self) -> None:
-        """Đọc nút 👍/👎 dưới mỗi tin → ghi vào bảng phản hồi (vòng học).
+    def _save_feedback_vote(
+        self, listing_id: str, is_good: bool, voter_id: str = ""
+    ) -> tuple[int, int] | None:
+        """Ghi 1 phiếu 👍/👎. Trả về (số phiếu đáng xem, số phiếu rác) sau khi ghi.
 
         Đây là ĐẦU VÀO duy nhất của vòng học. Trước session 23 bảng này trống
         vĩnh viễn: phần phân tích hàng tuần vẫn chạy nhưng không có dữ liệu nào
@@ -1216,39 +1622,29 @@ class RealEstorkAgent:
         pháp lý về danh tính người đăng — dùng để chỉnh ngưỡng, không dùng để
         khẳng định ai là môi giới.
         """
-        def _save(listing_id: str, is_good: bool, voter_id: str = "") -> tuple[int, int] | None:
-            """Ghi 1 phiếu. Trả về (số phiếu đáng xem, số phiếu rác) sau khi ghi."""
-            row = self.db.get_listing_by_id(listing_id)
-            if not row:
-                logger.warning(f"[orchestrator] Phản hồi cho tin không tìm thấy: {listing_id}")
-                return None
-            rid = row.get("id") or listing_id
-            # Định danh người bấm nằm trong feedback_source vì bảng không có cột
-            # riêng. Nhờ vậy vợ và đồng nghiệp mỗi người giữ 1 phiếu độc lập trên
-            # cùng một tin, và ai đổi ý thì chỉ ghi đè phiếu CỦA MÌNH.
-            source = f"telegram_button:{voter_id}" if voter_id else "telegram_button"
-            ok = self.db.save_feedback(
-                listing_id=rid,
-                predicted_label=row.get("classification_label") or "",
-                predicted_score=int(row.get("classification_score") or 0),
-                actual_label="chinh_chu" if is_good else "moi_gioi",
-                feedback_source=source,
-                signals_at_prediction={},
-            )
-            if not ok:
-                return None
-            # Ghi TRƯỚC, dọn SAU: mỗi người đúng 1 phiếu, và nếu ghi hỏng thì
-            # phiếu cũ của họ vẫn còn nguyên chứ không mất trắng.
-            self.db.prune_feedback(rid, source)
-            return self.db.count_feedback(rid)
-
-        try:
-            saved = await self.telegram.poll_feedback(_save)
-        except Exception as e:
-            logger.warning(f"[orchestrator] collect_feedback lỗi: {type(e).__name__}: {e}")
-            return
-        if saved:
-            logger.info(f"[orchestrator] 📝 Ghi nhận {saved} phản hồi từ Telegram")
+        row = self.db.get_listing_by_id(listing_id)
+        if not row:
+            logger.warning(f"[orchestrator] Phản hồi cho tin không tìm thấy: {listing_id}")
+            return None
+        rid = row.get("id") or listing_id
+        # Định danh người bấm nằm trong feedback_source vì bảng không có cột
+        # riêng. Nhờ vậy vợ và đồng nghiệp mỗi người giữ 1 phiếu độc lập trên
+        # cùng một tin, và ai đổi ý thì chỉ ghi đè phiếu CỦA MÌNH.
+        source = f"telegram_button:{voter_id}" if voter_id else "telegram_button"
+        ok = self.db.save_feedback(
+            listing_id=rid,
+            predicted_label=row.get("classification_label") or "",
+            predicted_score=int(row.get("classification_score") or 0),
+            actual_label="chinh_chu" if is_good else "moi_gioi",
+            feedback_source=source,
+            signals_at_prediction={},
+        )
+        if not ok:
+            return None
+        # Ghi TRƯỚC, dọn SAU: mỗi người đúng 1 phiếu, và nếu ghi hỏng thì
+        # phiếu cũ của họ vẫn còn nguyên chứ không mất trắng.
+        self.db.prune_feedback(rid, source)
+        return self.db.count_feedback(rid)
 
     def setup_scheduler(self) -> None:
         """Configure APScheduler from config/schedule.yaml."""
@@ -1263,8 +1659,8 @@ class RealEstorkAgent:
             "weekly_model_comparison": self.weekly_model_comparison,
             "analyze_classification_feedback": self.analyze_classification_feedback,
             "cleanup_old_phone_data": self.cleanup_old_phone_data,
-            "collect_feedback": self.collect_feedback,
             "check_write_health": self.check_write_health,
+            "check_source_silence": self.check_source_silence,
         }
 
         for job_name, job_config in schedules.items():
@@ -1418,6 +1814,28 @@ class RealEstorkAgent:
                     await asyncio.sleep(30)
                     continue
 
+                # QUOTA CẠN: Supabase khoá cả org, mọi lệnh đọc/ghi trả 402. Khác
+                # hẳn lỗi config — không sửa được từ máy mình, chỉ chờ hết kỳ billing
+                # hoặc nâng plan. Thoát ở đây là sai: spider/scoring/Telegram không
+                # đụng DB, bot vẫn gửi tin cho vợ được. Sự cố 2026-10-04: 108 tin đã
+                # đủ điều kiện gửi bị bỏ trong 38 giờ vì DB chết kéo cả bot chết theo.
+                if _is_quota_error(err_msg):
+                    self._db_degraded = True
+                    logger.warning(
+                        "[orchestrator] ⚠️  Supabase hết quota (402) — chạy CHẾ ĐỘ CHỈ GỬI ALERT. "
+                        "Tin vẫn gửi Telegram, ghi tạm ra file, nạp lại sau bằng: bot db-replay"
+                    )
+                    try:
+                        await self.telegram.send_lifecycle(
+                            "⚠️ <b>RealEstork Bot — CHẠY CHẾ ĐỘ CHỈ GỬI ALERT</b>\n"
+                            "Supabase hết quota egress, DB tạm không ghi/đọc được.\n"
+                            "Bot vẫn crawl, chấm điểm và gửi tin bình thường.\n"
+                            "Tin được ghi tạm ra file, nạp lại khi quota reset."
+                        )
+                    except Exception as tg_err:
+                        logger.error(f"[orchestrator] Telegram alert fail: {tg_err}")
+                    break
+
                 logger.error(
                     f"[orchestrator] ❌ DB smoke test FAILED — không thể write vào Supabase. "
                     f"{type(e).__name__}: {err_msg}"
@@ -1457,6 +1875,13 @@ class RealEstorkAgent:
         self.scheduler.start()
         logger.info("[orchestrator] ✅ Scheduler started. Running...")
 
+        # Vòng nghe nút 👍/👎 — chạy thường trực, KHÔNG đặt vào scheduler.
+        # Hai bên cùng hỏi Telegram sẽ đá nhau (Telegram chỉ cho một nơi đọc
+        # hàng cập nhật), nên job theo lịch đã bị gỡ khỏi config/schedule.yaml.
+        self._feedback_task = asyncio.create_task(
+            self.telegram.run_feedback_listener(self._save_feedback_vote)
+        )
+
         # Notify Telegram: bot started
         mode_label = {
             "manual-visible": "🖥️ Có cửa sổ (terminal)",
@@ -1492,6 +1917,8 @@ class RealEstorkAgent:
                 )
             except Exception as e:
                 logger.warning(f"[orchestrator] Lifecycle notify failed on shutdown: {e}")
+            if self._feedback_task:
+                self._feedback_task.cancel()
             self.scheduler.shutdown()
         except Exception as e:
             # Unhandled exception — clean_exit stays False → lock preserved for crash detection.

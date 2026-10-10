@@ -81,7 +81,23 @@ signals:
 
   # listing_is_vip: bỏ — muaban gần như mọi tin VIP, signal không discriminate
 
-  # Time-based signals (critical: muaban chỉ crawl trong 24h nên luôn có data)
+  # ── Tuổi tin & việc đẩy tin ─────────────────────────────────────────
+  # Đo 2 đêm 17-19/09, theo dõi cùng 140 tin qua nửa đêm: muaban gán lại dấu
+  # thời gian cho gần như toàn bộ tin trong khung 00:00-00:06 (161/164 tin bị
+  # đổi dấu nằm trong khung này). Nên "tuổi tin" của muaban phần lớn là con số
+  # do máy sinh, không nói gì về tin.
+  #
+  # Spider giờ đặt tuổi = None cho tin mang dấu máy gán → hai signal dưới đây
+  # CHỈ fire với tin có dấu giờ ban ngày, tức có người thật vừa đẩy. Trước đây
+  # chúng fire cho mọi tin: đo 16/09 thì 13/16 tin gửi đi có điểm đúng bằng
+  # ngưỡng 55, tức qua được chủ yếu nhờ +10 chấm trên dữ liệu máy sinh.
+  manually_bumped:
+    weight: +10   # Có người bấm đẩy NGOÀI lượt quét nửa đêm của sàn.
+                  # Quyết định của user 22/09: coi đây là tín hiệu tốt — chủ
+                  # lấy lại được mặt bằng thì đẩy tin cũ lên tìm khách mới.
+                  # RỦI RO ĐÃ BIẾT, chưa có dữ liệu bác bỏ: môi giới cũng đẩy
+                  # tay và đẩy siêng hơn. Đối chiếu phiếu 👍/👎 rồi chỉnh lại.
+
   listing_very_fresh:
     weight: +10   # <= 2h: instant priority
 

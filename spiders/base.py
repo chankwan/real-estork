@@ -50,6 +50,9 @@ class RawListing:
     poster_join_year: int | None = None      # Year the poster joined the platform (absolute year, not relative)
     has_pro_agent_badge: bool = False        # "Môi giới chuyên nghiệp" badge detected on list/detail page
     is_vip: bool = False                     # True nếu card có VIP tier (silver/gold/diamond) — dùng cho early-stop logic
+    manually_bumped: bool = False            # muaban: dấu thời gian nằm NGOÀI lượt quét nửa đêm
+                                             # của sàn → có người thật vừa đẩy tin. Xem
+                                             # MuabanSpider._la_day_tay.
     avatar_url: str | None = None            # Poster avatar URL for broker detection
     is_main_street: bool | None = None       # True = mặt tiền/mặt phố, False = hẻm. None = unknown
     poster_account_id: str | None = None     # Platform account ID (more stable than name for dedup)
@@ -136,6 +139,26 @@ class BaseSpider(ABC):
         # Orchestrator may seed this with already-seen source_ids (format: "source:source_id")
         # so spider can early-stop when hitting dedup-heavy pages. Empty by default.
         self.seen_ids: set[str] = set()
+        # Đếm sức khoẻ của MỘT cycle. Spider tự reset đầu mỗi lần fetch và tự
+        # tăng tại đúng chỗ phát hiện sự cố; orchestrator đọc sau cycle để
+        # quyết định có kêu chuông "nền tảng đổi" hay không.
+        #
+        # Từ vựng dùng chung (mọi spider nên dùng đúng tên này, nếu không
+        # chuông sẽ không thấy):
+        #   list_pages_ok    — đọc được trang danh sách (tín hiệu SỐNG)
+        #   list_http_error  — nền tảng trả mã lỗi
+        #   list_cf_blocked  — dính tường chặn bot
+        #   list_no_data     — không tìm thấy khối dữ liệu trong trang
+        #                      (= nền tảng đổi cấu trúc trang)
+        #   list_repeat_page — trang mới trùng khít trang trước
+        #                      (= nền tảng bỏ qua tham số phân trang)
+        # batdongsan có sẵn `list_no_cards` cùng nghĩa với list_no_data — giữ
+        # nguyên tên cũ ở đó, chuông đọc cả hai.
+        self.cycle_health: dict[str, int] = {}
+
+    def bump_health(self, key: str, n: int = 1) -> None:
+        """Tăng một đếm sức khoẻ của cycle hiện tại."""
+        self.cycle_health[key] = self.cycle_health.get(key, 0) + n
 
     @abstractmethod
     async def fetch_listings(self) -> list[RawListing]:
