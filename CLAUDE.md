@@ -43,8 +43,13 @@ Implemented in `pipeline/classifier.py` → `should_alert_wife()` with `_normali
 ## Known Issues / TODO
 - [x] Phone signals tắt vĩnh viễn — Chotot account bị ban 2026-04-22, đã xóa phone scraping khỏi nhatot spider
 - [x] `account_new_or_few_posts` fixed — nhatot spider giờ extract `seller_info.live_ads` → `poster_total_listings`
+- [x] Ghi DB hỏng không còn chặn alert — tin vẫn gửi, ghi tạm ra file, nạp lại bằng `db-replay` (session 26)
+- [x] Dung lượng DB có job dọn hàng tuần + backup lên Google Drive (session 26)
 - [ ] batdongsan phone reveal not implemented
 - [ ] Scoring weights not yet tuned with real feedback data
+- [ ] `manually_bumped` (+10, muaban) chưa hiệu chỉnh — môi giới cũng đẩy tin tay, chờ phiếu 👍/👎
+- [ ] Đường veto môi giới không ghi tạm khi DB chết → tin bị veto mất khỏi sổ sách (không ảnh hưởng alert)
+- [ ] `detect_fb_intent` recall thấp — nhiều tin Chủ rơi về `unknown` nên không gửi
 
 ## Nhatot Phone Reveal
 - **DISABLED** — Chotot account bị ban (2026-04-22). Phone scraping đã xóa khỏi spider.
@@ -56,16 +61,61 @@ Implemented in `pipeline/classifier.py` → `should_alert_wife()` with `_normali
 - `config/spiders.yaml` — enable/disable spiders, URLs, page limits
 - `config/ai.yaml` — AI provider/model selection
 - `config/schedule.yaml` — cron schedules
-- `.env` — secrets (tokens, API keys, chat IDs)
+- `.env` — secrets (tokens, API keys, chat IDs) + `BACKUP_DRIVE_DIR` (đường dẫn
+  thư mục backup trên Google Drive; mỗi máy một khác nên KHÔNG có giá trị mặc
+  định trong code — thiếu thì `housekeeping` dừng hẳn và nói rõ)
 
 ## Running
 ```bash
 python -m cli.main start              # full orchestrator
 python -m cli.main spider run nhatot  # test single spider
 python -m cli.main classify <id>      # debug scoring for a listing
+python -m cli.main doctor             # 25 pre-flight checks
+python -m cli.main db-replay          # nạp lại tin ghi tạm sau khi DB chết
+python -m cli.main housekeeping       # dọn tin cũ + backup .env lên Drive
 ```
 
+Task Scheduler (Windows, đều `Interactive` logon):
+| Task | Trigger | Chạy gì |
+|---|---|---|
+| RealEstork Bot | AtLogon | `cli.main start --source auto-headless` |
+| RealEstork FB Scan | AtLogon | `bot-fb-scan.bat /auto` |
+| RealEstork Housekeeping | Chủ nhật 03:00 | `cli.main housekeeping` |
+
 ## Changelog
+### 2026-10-04 → 10-10 (session 26) — Supabase khoá cả org 6 ngày vì project KHÁC đốt quota; bot mất 108 tin vì sổ sách hỏng kéo sản phẩm chết theo
+- **Trigger**: 4/10 lúc 05:42 bot bắn Telegram "KHÔNG GHI ĐƯỢC DỮ LIỆU". Supabase trả `402 exceed_egress_quota` cho **mọi** lệnh đọc VÀ ghi.
+- **Thủ phạm KHÔNG phải real-estork**: quota egress 5 GB/tháng tính theo **organization**, không theo project. Org `chankwan` chứa 2 project. Đo từ edge logs (chỉ tính response 200, 19,2 giờ trước lúc khoá):
+
+  | Project | Egress/ngày |
+  |---|---|
+  | `gamegoldez erp` | **~1,4 GB** |
+  | `real-estork` | ~5–10 MB |
+
+  Chênh ~150 lần. Query nặng nhất chiếm ~80%: `llm_conversations?select=*&channel=eq.g2g&order_id=like.psc_*` — 15.179 lần/19,2h (≈13 lần/phút, không backoff), mỗi lần **61,3 KB** vì `select=*` kéo nguyên transcript hội thoại.
+- **Suy luận sai đã được bác bỏ**: em đoán "có gì đó ship vào GGEZ quanh 30/9". Không có — code polling nặng có từ 6-12/8, nhưng bot GGEZ **tắt từ ~24/9 tới 2/10** (Supabase tự pause project vì không hoạt động), bật lại 2/10 rồi đốt ~2 GB trong 36 giờ. Hướng "đợt đốt mới bắt đầu gần đây" thì đúng, nguyên nhân thì sai.
+- **Thiệt hại thật — và nó là lỗi của mình, không phải của Supabase**: `_process_listing` có dòng `if not saved: return "db_error"` → ghi DB hỏng thì **bỏ luôn tin, không gửi Telegram**. Đo trên log: **108 tin đã đủ điều kiện gửi bị rơi im lặng trong 38 giờ đầu** (≈68 tin/ngày). Bot còn sống, còn crawl, còn chấm điểm đúng — chỉ là sổ sách hỏng kéo sản phẩm chết theo.
+- **Fix A — alert là sản phẩm, DB chỉ là sổ sách**: bỏ dòng chặn. Ghi DB hỏng vẫn gửi, chỉ mất 2 nút 👍/👎 (không có `listing_id`). Tin ghi hỏng spool ra `.db_spool/pending_listings.jsonl`; tin được alert ghi thêm dòng mang `status='alerted_telegram'`, nạp lại theo thứ tự thì dòng sau đè dòng trước.
+- **Fix B — bot khởi động được trong lúc bị khoá**: lỗi 402 trước đây rơi vào nhánh "lỗi config" → `sys.exit(1)`, tức **restart là bot chết hẳn**. Thêm `_is_quota_error()` tách quota khỏi lỗi mạng/chứng chỉ/RLS → vào chế độ chỉ-gửi-alert.
+- **Fix C — dedup có seed khi không đọc được DB**: `_seed_source_id_tu_log()` gom source_id từ `logs/*.log` (~4.000 ID / 1,3s). Seed rỗng = mọi tin thành tin mới = gửi lại hàng loạt. Verify sau restart: nhatot fetch 195 tin → **0 tin mới**, không bùng một tin nào.
+- **Kết quả 5 ngày chạy chế độ này**: **340 tin đã gửi cho vợ** — toàn bộ số này với code cũ đã rơi. Quota reset 10/10 lúc ~09:00-09:30, bot tự phát hiện và tự báo "✅ ghi dữ liệu đã hoạt động lại". Nạp lại **919/919 dòng**, DB 113.702 → 114.144.
+- **Bẫy suýt mất tin khi nạp lại**: `json.dumps` để nguyên `U+2028`, nhưng `splitlines()` của Python **cắt dòng ở ký tự đó**. Một tin nhatot có `U+2028` trong mô tả bị xé thành 2 dòng không parse được → nạp lại sẽ **bỏ sót tin thật mà không ai biết**. Phát hiện trước khi nạp nhờ lệnh `db-replay` in ra dòng hỏng thay vì nuốt im. Fix: tách bằng `"\n"`, và escape `U+2028/U+2029` lúc ghi.
+- **Dọn dung lượng**: DB 272/500 MB, tăng ~51 MB/tháng → chạm trần khoảng 2/2027, lúc đó Supabase chuyển sang chỉ-đọc. Xoá **52.390 tin** cũ hơn 60 ngày và chưa từng gửi; giữ nguyên 24.381 tin đã gửi + 19 phiếu phản hồi. Xuất ra file, nén, kiểm bằng cách **giải nén đọc lại**, đẩy lên Google Drive, đối chiếu sha256 rồi mới xoá.
+- **Job `housekeeping` hàng tuần** (Chủ nhật 03:00): lặp lại đúng quy trình trên, tự động. Xem mục Running.
+- **Bài học ghi lại**:
+  1. **Quota Supabase tính theo organization.** Hai dự án không liên quan chung một org nghĩa là bug của bên này giết bên kia.
+  2. **Đừng để tầng lưu trữ quyết định tầng sản phẩm.** Alert gửi được thì phải gửi, kể cả khi không ghi sổ được.
+  3. Giá trị mặc định cho dữ liệu thiếu không trung tính — lần này là `saved=None` bị hiểu thành "bỏ tin". Cùng kiểu lỗi với session 24 (fallback 999) và session 22 (`poster_total_listings=-1`). **Ba lần rồi.**
+- **Cảnh báo cho session sau**: `classification_feedback.listing_id` có khoá ngoại tới `listings` để `NO ACTION` — xoá tin đang có phiếu sẽ bị Postgres từ chối **cả lệnh**, không chỉ dòng đó. Mọi lệnh dọn phải loại nhóm này.
+
+### 2026-09-15 → 09-22 (session 25) — Nút 👍/👎 trượt 100% số lần bấm; muaban gán lại dấu thời gian hàng loạt lúc nửa đêm
+- **Nút phản hồi chưa bao giờ hoạt động**: Telegram chỉ nhận trả lời cho một lần bấm trong ~15 giây, mà job `collect_feedback` chạy 1 phút/lần nghĩa là cú bấm nằm chờ trung bình ~30 giây → **quá hạn 100%** (log 09/08 5/5, 09/11 5/5, 15/09 1/1). Bỏ job theo lịch, thay bằng vòng nghe thường trực (long polling) khởi động cùng bot. Đây là lý do mọi mục "chờ dữ liệu phản hồi" trong BACKLOG đứng im bấy lâu — không phải vợ không bấm, mà bấm xong không tới nơi.
+- **Chuông nguồn im lặng** (`check_source_silence`, 10 phút/lần): bắt ca nhatot treo 8h ngày 14/09 mà không ai biết.
+- **Chốt chặn "phân trang chết"**: so ID trang này với trang trước, trùng khít thì dừng. Kiểm **kết quả** chứ không kiểm tên tham số, nên nền tảng đổi cách gọi trang vẫn bắt được. Lỗi này từng im lặng cả tuần bên muaban.
+- **muaban gán lại dấu thời gian hàng loạt**: đo 2 đêm 17-19/09, theo dõi cùng 140 tin qua nửa đêm — **161/164 tin bị đổi dấu nằm trong khung 00:00-00:06**. Nên "tuổi tin" của muaban phần lớn là con số máy sinh, không nói gì về tin. Spider giờ đặt tuổi = `None` cho tin mang dấu máy gán; thêm signal `manually_bumped` (+10) chỉ fire với tin có dấu giờ ban ngày. Trước đây 13/16 tin gửi đi có điểm **đúng bằng** ngưỡng 55, tức qua được chủ yếu nhờ +10 chấm trên dữ liệu máy sinh.
+- **Rủi ro đã biết, chưa có dữ liệu bác bỏ**: môi giới cũng đẩy tin tay, và siêng hơn chủ nhà. Signal chứng minh "tin đang được chăm", **không** chứng minh ai chăm. Cần đối chiếu phiếu 👍/👎 (giờ mới chạy thật) rồi chỉnh lại.
+- **Từ vựng `cycle_health` dùng chung** cho mọi spider (`list_pages_ok` / `list_http_error` / `list_cf_blocked` / `list_no_data` / `list_repeat_page`) — chuông chỉ đọc đúng mấy tên này.
+
 ### 2026-09-08 (session 24) — Muaban 0 alert suốt 252 cycle + chuẩn hoá scoring bỏ phụ thuộc SĐT
 - **Trigger**: user báo group muaban không nhận được tin nào từ lâu, không rõ do tin không đạt hay do nền tảng đổi.
 - **Đo trước khi kết luận** (8 ngày log + toàn bộ DB): muaban 252 cycle, 1028 tin mới, **0 alert**. Đối chiếu: nhatot 487 tin → 222 alert, batdongsan 3488 → 62, facebook 38 → 6.
