@@ -21,9 +21,14 @@ ai:
   # === TIER 1: Free — openclaw-zero-token (web chat gateway) ===
   provider: "zero-token"
   zero_token:
-    base_url: "http://localhost:3001/v1"
-    api_key: "any-string"       # zero-token doesn't validate key
-    model: "gemini-web/gemini-pro"           # ← đang dùng
+    # Proxy LLM chạy trên PC3, gọi qua Tailscale. Khai bằng ${...} để file này
+    # commit được mà không lộ token, giá trị thật lấy từ biến môi trường cấp
+    # User (đã có sẵn trên máy — cùng biến mà /gemini-explain dùng).
+    # Trước đây trỏ localhost:3001 nhưng KHÔNG CÓ GÌ nghe ở cổng đó trên PC2:
+    # bộ não AI chưa từng chạy một lần nào (0/114.344 tin có ai_result).
+    base_url: "${CLIPROXY_URL}"
+    api_key: "${CLIPROXY_TOKEN}"
+    model: "gemini-3.7-flash-high"
     # model: "deepseek-web/deepseek-chat"   # Free unlimited
     # model: "qwen-web/qwen-max"            # Free tier
     # model: "kimi-web/kimi-chat"           # Free

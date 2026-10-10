@@ -1644,8 +1644,13 @@ class TestSoSachHongKhongDuocKeoAlertChetTheo:
         ag.ai = MagicMock()
         ag.ai.analyze_listing = AsyncMock(return_value=None)
         ag.classifier = MagicMock()
-        ag.classifier.classify.return_value = types.SimpleNamespace(
-            score=80, label="chinh_chu", ai_reasoning=None, signals_fired={}
+        # Dùng LỚP THẬT chứ không dựng object giả: object giả từng thiếu trường
+        # `ai_probability` nên test vỡ khi production thêm trường đó vào. Lớp
+        # thật thì không lệch được.
+        from pipeline.classifier import ClassificationResult
+
+        ag.classifier.classify.return_value = ClassificationResult(
+            score=80, label="chinh_chu"
         )
         ag.classifier.alert_skip_reason.return_value = None
         ag.classifier.non_rental_verdict.return_value = ""

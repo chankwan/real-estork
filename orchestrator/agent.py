@@ -571,7 +571,14 @@ class RealEstorkAgent:
             "address_normalized": listing.address,  # Will be normalized by DB client
             "classification_score": result.score,
             "classification_label": result.label,
-            "ai_result": {"reasoning": result.ai_reasoning} if result.ai_reasoning else None,
+            # Lưu cả XÁC SUẤT chứ không chỉ lý giải: đang chạy thử âm thầm
+            # (trọng số 0), và không có con số thì sau này không đối chiếu được
+            # với phiếu 👍/👎 để chọn trọng số thật.
+            "ai_result": (
+                {"reasoning": result.ai_reasoning, "is_owner_probability": result.ai_probability}
+                if (result.ai_reasoning or result.ai_probability is not None)
+                else None
+            ),
             "osint_result": osint_result,
             "status": existing_status if existing_status and existing_status.startswith("alerted") else "new",
         })

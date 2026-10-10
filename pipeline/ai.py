@@ -24,6 +24,27 @@ class AIGateway:
     def __init__(self, config_path: str = "config/ai.yaml") -> None:
         self._load_config(config_path)
 
+    @staticmethod
+    def _giai_bien(gia_tri: Any) -> Any:
+        """Đổi "${TEN_BIEN}" trong config thành giá trị biến môi trường.
+
+        Địa chỉ proxy LLM là IP Tailscale và token là bí mật — cả hai khác nhau
+        giữa các máy và không được nằm trong git. Khai bằng ${...} để file config
+        commit được, còn giá trị thật lấy từ môi trường.
+        """
+        if not isinstance(gia_tri, str):
+            return gia_tri
+        m = re.fullmatch(r"\$\{(\w+)\}", gia_tri.strip())
+        if not m:
+            return gia_tri
+        thuc = os.environ.get(m.group(1), "")
+        if not thuc:
+            logger.warning(
+                f"[ai] Config trỏ tới biến môi trường {m.group(1)} nhưng biến này rỗng "
+                f"— AI sẽ không gọi được."
+            )
+        return thuc
+
     def _load_config(self, config_path: str) -> None:
         with open(config_path, encoding="utf-8") as f:
             full_config = yaml.safe_load(f) or {}
@@ -46,8 +67,8 @@ class AIGateway:
         elif self.provider == "zero-token":
             self.p_config = config.get("zero_token", {})
             self.model = self.p_config.get("model", "deepseek-web/deepseek-chat")
-            self.base_url = self.p_config.get("base_url", "http://localhost:3001/v1")
-            self.api_key = self.p_config.get("api_key", "dummy")
+            self.base_url = self._giai_bien(self.p_config.get("base_url", "http://localhost:3001/v1"))
+            self.api_key = self._giai_bien(self.p_config.get("api_key", "dummy"))
         elif self.provider in ("anthropic", "openai"):
             self.p_config = config.get(self.provider, {})
             self.model = self.p_config.get("model", "")

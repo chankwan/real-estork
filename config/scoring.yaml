@@ -340,7 +340,15 @@ signals:
 
   ai_classification:
     description: "LLM phân tích text + metadata — 1 signal trong ~15 signals"
-    weight: 30
+    # TRONG SO 0 = CHAY THU AM THAM. AI van duoc goi, y kien van luu vao DB,
+    # nhung KHONG doi diem. Ly do: bo nao nay chua tung chay (0/114.344 tin co
+    # ai_result) nen toan bo trong so hien tai duoc tinh chinh qua 6 phien
+    # TRONG DIEU KIEN KHONG CO NO. Do 30 ngay: bat len voi trong so 30 thi
+    # nhatot co 867/1.147 tin dang gui co the bi keo xuong duoi nguong, va 192
+    # tin dang khong gui co the vuot len. Doi 2/3 lượng tin gui cho vo dua tren
+    # mot thanh phan chua do do chinh xac bao gio la danh bac.
+    # Sau 1-2 tuan: doi chieu y kien AI voi phieu 👍/👎 roi moi chon trong so.
+    weight: 0
     # 30/~200 total range ≈ 15% influence
     # Nếu AI unavailable → rules vẫn chạy đầy đủ
     model: "ollama/gemma4:e4b"   # Switchable via config/ai.yaml
