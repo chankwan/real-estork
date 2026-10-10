@@ -501,6 +501,27 @@ def start_orchestrator(
     logger.add(str(log_file), level="DEBUG", rotation="1 day", retention="7 days",
                encoding="utf-8",
                format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} | {message}")
+
+    # Bac cau logging chuan -> loguru. APScheduler ghi canh bao bang logging
+    # chuan ("Run time of job ... was missed by ..."), ma bot chi cau hinh
+    # loguru nen nhung canh bao do roi vao hu khong. Do la ly do viec bo luot
+    # chay am tham suot nhieu thang ma khong ai biet (phat hien 10/10).
+    import logging as _logging
+
+    class _BacCau(_logging.Handler):
+        def emit(self, record: _logging.LogRecord) -> None:
+            try:
+                muc = logger.level(record.levelname).name
+            except ValueError:
+                muc = record.levelno
+            # Gan ten logger goc vao dau dong: loguru lay {name} tu khung goi
+            # nen khong co no se hien "__main__", mat luon thong tin ai bao loi.
+            logger.opt(exception=record.exc_info).log(
+                muc, f"[{record.name}] {record.getMessage()}"
+            )
+
+    _logging.basicConfig(handlers=[_BacCau()], level=_logging.WARNING, force=True)
+    _logging.getLogger("apscheduler").setLevel(_logging.INFO)
     if sys.stdout is not None:
         console.print(f"[bold cyan]Starting RealEstork Orchestrator...[/bold cyan]")
         console.print(f"[dim]Logs → {log_file.resolve()}[/dim]")

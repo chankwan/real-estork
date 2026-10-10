@@ -1678,14 +1678,25 @@ class RealEstorkAgent:
                 continue
 
             if "interval_minutes" in job_config:
+                phut = job_config["interval_minutes"]
+                # misfire_grace_time mac dinh cua APScheduler la 1 GIAY: toi gio
+                # chay ma dieu phoi vien khong goi kip trong 1 giay thi no BO
+                # nguyen luot, khong chay bu. Vong xu ly chung voi batdongsan
+                # (mot luot ~911s) nen nhatot thuong xuyen tre qua 1 giay → do
+                # 10/10: nhatot chay 10,1 phut/lan thay vi 5 phut, tuc cu hai
+                # luot mat mot. Noi ra bang dung mot chu ky: luot tre van chay,
+                # tre hon mot chu ky thi bo (vi luot ke tiep sap toi roi).
+                # coalesce=True (mac dinh) gop nhieu luot lo thanh mot nen khong
+                # so don cuc.
                 self.scheduler.add_job(
                     fn,
                     "interval",
-                    minutes=job_config["interval_minutes"],
+                    minutes=phut,
                     id=job_name,
                     replace_existing=True,
+                    misfire_grace_time=int(phut * 60),
                 )
-                logger.info(f"[orchestrator] 📅 Scheduled '{job_name}' every {job_config['interval_minutes']}m")
+                logger.info(f"[orchestrator] 📅 Scheduled '{job_name}' every {phut}m")
 
             elif "cron" in job_config:
                 # Parse cron expression
@@ -1700,6 +1711,12 @@ class RealEstorkAgent:
                     day_of_week=parts[4],
                     id=job_name,
                     replace_existing=True,
+                    # Cung ly do voi job theo nhip: mac dinh 1 giay nghia la gap
+                    # luc vong xu ly ban thi bo luon. Job cron o day la viec
+                    # ngay/tuan (digest 8h, don so dien thoai 2h, phan tich phan
+                    # hoi 20h) — chay tre mot tieng van con nguyen gia tri, con
+                    # khong chay thi mat han ma khong ai biet.
+                    misfire_grace_time=3600,
                 )
                 logger.info(f"[orchestrator] Scheduled '{job_name}' cron: {job_config['cron']}")
 
