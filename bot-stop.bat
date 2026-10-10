@@ -32,7 +32,12 @@ REM Quet not process mo coi: parent cua bot KHONG nam trong lock file (lock chi
 REM ghi PID child), va cac lan start/stop truoc co the da de lai process cu.
 REM Dung PowerShell vi can loc theo CommandLine -- wmic/for-f parse sai khi
 REM CommandLine chua dau phay.
-powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | Where-Object { $_.CommandLine -match 'cli\.main' }; if ($p) { Write-Host ('[!] Con ' + @($p).Count + ' process mo coi -- dang don...'); $p | ForEach-Object { & taskkill /PID $_.ProcessId /F /T *>$null } } else { Write-Host '[OK] Khong con process mo coi.' }"
+REM KHONG dung \" de escape dau nhay: cmd.exe khong hieu \" ma chi coi " la
+REM ranh gioi chuoi, nen no NUOT dau nhay va PowerShell nhan duoc lenh khac
+REM voi lenh minh viet. Ban cu -Filter \"Name='pythonw.exe'\" chay duoc chi vi
+REM PowerShell tinh co chap nhan -Filter khong nhay. Loc bang Where-Object de
+REM ca dong khong con dau nhay kep nao.
+powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'pythonw.exe' -and $_.CommandLine -match 'cli\.main' }; if ($p) { Write-Host ('[!] Con ' + @($p).Count + ' process mo coi -- dang don...'); $p | ForEach-Object { & taskkill /PID $_.ProcessId /F /T *>$null } } else { Write-Host '[OK] Khong con process mo coi.' }"
 
 del .orchestrator.lock 2>nul
 echo.

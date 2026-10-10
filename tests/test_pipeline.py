@@ -1700,3 +1700,25 @@ class TestSoSachHongKhongDuocKeoAlertChetTheo:
         ag = self._agent(tmp_path, ghi_duoc=True)
         asyncio.run(ag._process_listing(self._tin()))
         assert not ag._spool_path.exists()
+
+    def test_tin_bi_veto_moi_gioi_cung_duoc_spool(self, tmp_path, monkeypatch):
+        """Tin bị veto môi giới cũng phải vào file ghi tạm khi DB chết.
+
+        Trước đây hai nhánh veto gọi upsert_listing rồi BỎ QUA kết quả, nên
+        lúc Supabase khoá (04-10/10) tin bị veto mất hẳn khỏi sổ sách — không
+        alert (đúng) nhưng cũng không ghi tạm (sai). Không ảnh hưởng tin gửi
+        cho vợ, nhưng làm sổ sách thủng một mảng.
+        """
+        monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "111")
+        monkeypatch.setenv("TELEGRAM_GROUP_CHAT_ID", "222")
+        ag = self._agent(tmp_path, ghi_duoc=False)
+        l = self._tin()
+        l.same_session_account_count = 9   # vượt ngưỡng veto của portal (>4)
+
+        ket_qua = asyncio.run(ag._process_listing(l))
+
+        assert ket_qua == "veto_broker"
+        assert ag.telegram.send_listing_alert.await_count == 0
+        dong = [json.loads(d) for d in ag._spool_path.read_text(encoding="utf-8").splitlines() if d.strip()]
+        assert len(dong) == 1
+        assert dong[0]["status"] == "auto_vetoed_broker"

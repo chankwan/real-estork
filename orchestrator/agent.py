@@ -500,7 +500,8 @@ class RealEstorkAgent:
                 "classification_label": "moi_gioi",
                 "status": "auto_vetoed_broker",
             })
-            self.db.upsert_listing(listing_data)
+            if not self.db.upsert_listing(listing_data):
+                self._spool_listing(listing_data)
             if listing.phone:
                 self.db.upsert_phone(listing.phone, listing.source)
             return "veto_broker"
@@ -519,7 +520,8 @@ class RealEstorkAgent:
                 "classification_label": "moi_gioi",
                 "status": "auto_vetoed_broker",
             })
-            self.db.upsert_listing(listing_data)
+            if not self.db.upsert_listing(listing_data):
+                self._spool_listing(listing_data)
             if listing.phone:
                 self.db.upsert_phone(listing.phone, listing.source)
             return "veto_broker"
@@ -768,7 +770,8 @@ class RealEstorkAgent:
                             "classification_label": "moi_gioi",
                             "status": "confirmed_broker",
                         })
-                        self.db.upsert_listing(data)
+                        if not self.db.upsert_listing(data):
+                            self._spool_listing(data)
                     except Exception as e:
                         logger.warning(f"[orchestrator] pro-agent save failed {pa.source_id}: {e}")
                 logger.info(f"[orchestrator] Saved {len(new_pro_agent)} new confirmed_broker listings")
@@ -1131,7 +1134,8 @@ class RealEstorkAgent:
                 "classification_label": "can_xac_minh",
                 "status": "unverified_poster",
             })
-            self.db.upsert_listing(data)
+            if not self.db.upsert_listing(data):
+                self._spool_listing(data)
         except Exception as e:
             logger.warning(
                 f"[orchestrator] lưu tin chưa xác minh {listing.source_id} lỗi: "

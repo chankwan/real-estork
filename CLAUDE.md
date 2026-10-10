@@ -48,7 +48,7 @@ Implemented in `pipeline/classifier.py` → `should_alert_wife()` with `_normali
 - [ ] batdongsan phone reveal not implemented
 - [ ] Scoring weights not yet tuned with real feedback data
 - [ ] `manually_bumped` (+10, muaban) chưa hiệu chỉnh — môi giới cũng đẩy tin tay, chờ phiếu 👍/👎
-- [ ] Đường veto môi giới không ghi tạm khi DB chết → tin bị veto mất khỏi sổ sách (không ảnh hưởng alert)
+- [x] Mọi chỗ ghi DB đều kiểm kết quả và ghi tạm khi hỏng — không còn chỗ nào nuốt lỗi (session 26)
 - [ ] `detect_fb_intent` recall thấp — nhiều tin Chủ rơi về `unknown` nên không gửi
 
 ## Nhatot Phone Reveal

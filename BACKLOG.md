@@ -25,11 +25,10 @@ _(không có item chờ)_
 - Nếu đã làm theo giả thuyết này: gắn nhãn sai ~22 tin chủ nhà, gắn đúng 0 tin.
 
 
-### Pre-existing test failure: `test_known_broker_phone_crushes_score`
-- File: `tests/test_pipeline.py`
-- Triệu chứng: signal `is_known_broker` không fire khi phone_stats có `is_known_broker=True`. Score=68 thay vì <40 như expected.
-- Phát hiện: session 14 khi chạy full test suite. Pre-existing trước commit 077337f.
-- Mức độ: thấp — chỉ ảnh hưởng test, không ảnh hưởng production logic (vì known_broker phone list hiện rất nhỏ).
+### ~~Pre-existing test failure: `test_known_broker_phone_crushes_score`~~ ✅ Hết fail (xác nhận 2026-10-10)
+- Chạy riêng `pytest -k known_broker_phone_crushes` → **pass**. Suite đầy đủ 136/136 pass.
+- Không ai sửa trực tiếp; nhiều khả năng được gỡ kèm khi làm lại scoring ở session 23/24.
+- Ghi chú cũ đã lỗi thời, giữ lại dòng này để khỏi ai đi tìm lại.
 
 ### ~~Bot bị silent crash khi browser context die~~ ✅ Fixed session 16 (2026-05-26)
 - Xem `orchestrator/agent.py` → `start()` — `clean_exit` flag + `_atexit_cleanup` + `except Exception` crash handler.
@@ -49,10 +48,10 @@ _(không có item chờ)_
 - **Verify**: chạy thật → `[OK] Bot (PID 8872) da dung.` + `[OK] Khong con process mo coi.`; kiểm tra độc lập sau đó: 0 process còn lại, lock đã xoá.
 - **Chưa rõ (giữ lại)**: vì sao `cli.main start` đẻ process con — chưa trace ra nguồn. Lock vẫn đảm bảo chỉ 1 scheduler chạy nên không sai kết quả.
 
-### `.bat` in ra `'M' is not recognized as an internal or external command`
-- **Operator thấy gì**: Chạy `bot-stop.bat` / `bot-start-headless.bat` thấy 2 dòng lỗi `'M' is not recognized` ở đầu output (bot vẫn chạy/dừng đúng).
-- **Nguyên nhân (giả thuyết)**: 1 dòng trong `.bat` bị cmd diễn giải sai (có thể liên quan chuỗi bắt đầu bằng "M" — path/echo không escape). Cosmetic, chưa ảnh hưởng chức năng.
-- **Mức độ**: thấp — chỉ gây nhiễu output.
+### ~~`.bat` in ra `'M' is not recognized as an internal or external command`~~ ✅ Điều tra xong 2026-10-10
+- **Không tái hiện được khi chạy thẳng bằng `cmd`.** Thử riêng từng nghi vấn: xuống dòng kiểu Unix, dấu gạch dài `—` trong dòng `REM`, và cả đoạn đầu file — đều chạy sạch.
+- Lỗi chỉ xuất hiện khi gọi `.bat` **qua lớp bọc PowerShell của môi trường agent**: thông báo ghi `At line:1 char:302` kèm ngữ cảnh `atch {} } };` — đó là code bọc, không phải nội dung `.bat`. Operator bấm đúp hoặc gõ `bot-stop` thì không gặp.
+- **Nhưng tìm được một lỗi thật đang ẩn trong cùng file** và đã sửa: `bot-stop.bat` dùng `\"` để escape dấu nháy bên trong chuỗi của `cmd`. **`cmd.exe` không hiểu `\"`** — nó chỉ coi `"` là ranh giới chuỗi nên NUỐT dấu nháy, PowerShell nhận được lệnh khác với lệnh viết ra. Bản cũ `-Filter \"Name='pythonw.exe'\"` chạy được chỉ vì PowerShell tình cờ chấp nhận `-Filter` không nháy. Đổi sang lọc bằng `Where-Object` để cả dòng không còn dấu nháy kép nào (verify: đếm còn đúng 2 dấu — cặp bao ngoài; chạy ra đúng 2 PID của bot).
 
 ---
 
