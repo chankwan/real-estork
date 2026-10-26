@@ -19,7 +19,7 @@ alert_filters:
   wife_max_listing_age_hours: 24
   wife_min_score: 55             # Đồng bộ 1 mốc cho cả 3 sàn rao vặt (2026-09-08).
                                  # Đo 3510 tin/18 ngày: 52 → 10,6%, 55 → 10,6% — không đổi thực tế.
-  wife_min_price_vnd: 20000000
+  wife_min_price_vnd: 15000000     # 20M → 15M (2026-10-25): đồng bộ nhatot/muaban, sót tin Q10 16M chính chủ 76đ
   product_min_score: 60
   wife_allowed_districts:
     - "Quận 1"
