@@ -73,7 +73,7 @@ spiders:
     interval_minutes: 60
 
   - name: facebook_groups
-    enabled: true       # Go-live 2026-06-26: ingest receiver chạy khi bot start.
+    enabled: false      # Tạm dừng 2026-10-25 (user chưa cần tin FB, cho nhẹ bot). Go-live 2026-06-26: ingest receiver chạy khi bot start.
     type: push          # PUSH model: userscript Tampermonkey POST về localhost (KHÔNG pull web)
     interval_minutes: 3 # ignored — scheduling ở config/schedule.yaml (facebook_groups_cycle)
     # Ingest receiver (localhost-only). Userscript phải dùng cùng port + token.
