@@ -152,6 +152,9 @@ class ClassificationPipeline:
                 # AI signal: result is float 0.0-1.0, scale weight
                 # probability=1.0 → +weight, probability=0.0 → -weight, 0.5 → 0
                 contribution = weight * (result - 0.5) * 2
+            elif isinstance(result, float):
+                # Signal có mức (vd text_marketing_superlatives: 0 / 0.5 / 1.0)
+                contribution = weight * result
             elif result:
                 contribution = weight
             else:

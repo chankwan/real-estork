@@ -56,7 +56,7 @@ from urllib.parse import urljoin
 
 from loguru import logger
 
-from spiders.base import BaseSpider, RawListing
+from spiders.base import BaseSpider, RawListing, bo_tin_trung
 
 BASE_URL = "https://batdongsan.com.vn"
 GURU_BASE = "https://guru.batdongsan.com.vn"
@@ -156,6 +156,10 @@ class BatdongsanSpider(BaseSpider):
                 pro_agent_listings.extend(pro_agents)
                 if len(self.start_urls) > 1:
                     await asyncio.sleep(self.request_delay)
+
+            # Bỏ trùng trước khi mở trang chi tiết — vừa khỏi mở 2 lần, vừa để
+            # bước đếm same-session phía dưới không đếm một tin hai lần.
+            all_listings = bo_tin_trung(all_listings)
 
             # ── Detail enrichment (parallel across all URLs) ───────────────
             logger.info(f"[batdongsan] Enriching {len(all_listings)} details (concurrency={self.detail_concurrency})")

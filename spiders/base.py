@@ -117,6 +117,24 @@ class RawListing:
         }
 
 
+def bo_tin_trung(listings: list[RawListing]) -> list[RawListing]:
+    """Giữ bản đầu tiên của mỗi tin (theo source_id), bỏ các bản lặp.
+
+    Spider cào nhiều URL thì cùng một tin có thể nằm ở hai URL — nhatot URL
+    "mọi BĐS cho thuê" chứa trọn URL "văn phòng/mặt bằng". Không bỏ trùng trước
+    khi đếm `same_session_account_count` thì mỗi tin bị đếm hai lần: chủ có 2
+    tin thành "đăng 4 tin" và dính phạt môi giới (tin nhatot 135317229, 18/10).
+    """
+    da_thay: set[str] = set()
+    out: list[RawListing] = []
+    for l in listings:
+        if l.source_id in da_thay:
+            continue
+        da_thay.add(l.source_id)
+        out.append(l)
+    return out
+
+
 class BaseSpider(ABC):
     """
     Abstract base class for all spiders.

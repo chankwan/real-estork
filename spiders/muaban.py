@@ -30,7 +30,7 @@ from urllib.parse import urljoin
 
 from loguru import logger
 
-from spiders.base import BaseSpider, RawListing
+from spiders.base import BaseSpider, RawListing, bo_tin_trung
 
 BASE_URL = "https://muaban.net"
 # Gói tin trả phí. Đối chiếu service_display trên trang chi tiết (2026-09-08):
@@ -93,6 +93,8 @@ class MuabanSpider(BaseSpider):
                 all_listings.extend(url_listings)
                 if idx < len(self.start_urls) - 1:
                     await asyncio.sleep(self.request_delay)
+
+        all_listings = bo_tin_trung(all_listings)
 
         # Post-process: same-session account count (uses user_id as key) — global across URLs.
         from collections import Counter

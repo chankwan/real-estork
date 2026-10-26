@@ -1727,3 +1727,98 @@ class TestSoSachHongKhongDuocKeoAlertChetTheo:
         dong = [json.loads(d) for d in ag._spool_path.read_text(encoding="utf-8").splitlines() if d.strip()]
         assert len(dong) == 1
         assert dong[0]["status"] == "auto_vetoed_broker"
+
+
+# =====================================================
+# Tin nhatot 135317229 (Anh Bảy, nguyên tòa Tân Phú 250tr) — chấm 9 điểm, sót
+# alert ngày 18/10. Ba lỗi trừ oan (đếm trùng tin giữa 2 URL −20, dấu câu bị
+# coi là emoji −15, ảnh đại diện bị đếm thành ảnh riêng −10) và một chữ "đắc
+# địa" trừ đủ −20. Dữ liệu dưới đây lấy từ chính tin đó.
+# =====================================================
+
+_ANH_BAY_TITLE = "CHO THUÊ TÒA NHÀ MỚI 100% –TÂN PHÚ–1880M² SÀN – GIÁ CHỈ 250 TR/THÁNG"
+_ANH_BAY_BODY = (
+    "• Vị trí đắc địa: Số 69/39-41-43 Nguyễn Cửu Đàm, Phường Tân Sơn Nhì, Quận Tân Phú, TP.HCM. "
+    "Đường trước nhà rộng 12m thông thoáng, xe lớn ra vào tránh nhau thoải mái, có sân rộng cho xe lớn quay đầu.\n"
+    "• Kết cấu hiện đại: Tòa nhà mới xây, hiện trạng sử dụng ngay, sàn và trần đã hoàn thiện đồng bộ, sạch đẹp.\n"
+    "\t• Tổng diện tích sàn: 1880m²\n"
+    "\t• Quy mô: 1 tầng hầm giữ xe, 5 tầng làm việc biệt lập và 1 sân thượng siêu thoáng mát.\n"
+    "\t• Tiện ích vận hành: 2 thang máy tốc độ cao, hệ thống thang thoát hiểm độc lập.\n"
+    "\t• An toàn pháp lý: Hệ thống PCCC đã được cơ quan chức năng thẩm định và cấp phép đầy đủ.\n"
+    "• Kết nối giao thông & Tiện ích xung quanh:\n"
+    "\t• Sát vách tuyến Metro số 2 (Trạm Bà Quẹo).\n"
+    "\t• Nằm giữa cụm chợ giao thương sầm uất: Chợ Tân Hương, Võ Thành Trang, chợ Sơn Kỳ...\n"
+    "• Hình thức cho thuê: Thuê lâu dài, ổn định.\n"
+    "• Giá thuê nguyên tòa: 250 triệu đồng / tháng, cọc 3 tháng.\n"
+    "Liên hệ chính chủ: Anh Bảy – *** (Hỗ trợ xem nhà trực tiếp 24/7)."
+)
+
+
+def _anh_bay_raw(list_id: str = "135317229") -> dict:
+    """Ad dict dạng nhatot trả trong __NEXT_DATA__: `image` là ảnh đại diện bản
+    nhỏ, `images` là đủ 7 ảnh bản lớn — ảnh đầu trùng tên file với `image`."""
+    ten = [f"ef5dff957e9209069ae831c0e055704{i}-300799850908226149{i}.jpg" for i in range(7)]
+    return {
+        "list_id": int(list_id),
+        "subject": _ANH_BAY_TITLE,
+        "body": _ANH_BAY_BODY,
+        "area_name": "Quận Tân Phú",
+        "price": 250_000_000,
+        "account_name": "Anh Bảy",
+        "account_id": 3868774,
+        "type": "u",
+        "list_time": 1792454386830,  # 2026-10-18 00:39 UTC = 07:39 giờ VN
+        "image": f"https://cdn.chotot.com/AAA/preset:listing/plain/{ten[0]}",
+        "images": [f"https://cdn.chotot.com/BBB/preset:view/plain/{t}" for t in ten],
+    }
+
+
+class TestTinAnhBayKhongBiTruOan:
+    def test_anh_dai_dien_khong_bi_dem_thanh_anh_rieng(self):
+        from spiders.nhatot import NhatotSpider
+        l = NhatotSpider({}).parse_listing(_anh_bay_raw())
+        assert len(l.images) == 7
+
+    def test_dau_cau_khong_phai_emoji(self):
+        from pipeline.signals import SignalContext, check_description_many_emojis
+        l = make_listing(title=_ANH_BAY_TITLE, description=_ANH_BAY_BODY)
+        assert check_description_many_emojis(SignalContext.from_listing(l)) is False
+
+    def test_emoji_that_van_bi_bat(self):
+        from pipeline.signals import SignalContext, check_description_many_emojis
+        l = make_listing(title="🔥 HOT 🔥", description="⭐ mặt tiền ✅ giá tốt ☎ gọi ngay 🏠")
+        assert check_description_many_emojis(SignalContext.from_listing(l)) is True
+
+    def test_cung_tin_o_hai_url_chi_dem_mot_lan(self):
+        from spiders.base import bo_tin_trung
+        a1 = make_listing(source_id="1", contact_name="Anh Bảy")
+        a2 = make_listing(source_id="2", contact_name="Anh Bảy")
+        # URL "mọi BĐS" có cả 2 tin, URL "văn phòng/mặt bằng" lặp lại cả 2.
+        gop = [a1, a2, make_listing(source_id="1"), make_listing(source_id="2")]
+        assert [l.source_id for l in bo_tin_trung(gop)] == ["1", "2"]
+
+    def test_mot_chu_quang_cao_tru_nua_hai_chu_tru_du(self):
+        from pipeline.signals import SignalContext, check_text_marketing_superlatives as f
+        assert f(SignalContext.from_listing(make_listing(description="nhà thường"))) == 0.0
+        assert f(SignalContext.from_listing(make_listing(description="vị trí đắc địa"))) == 0.5
+        assert f(SignalContext.from_listing(make_listing(description="đắc địa, vị trí vàng"))) == 1.0
+
+    def test_tin_anh_bay_qua_nguong_gui(self):
+        """Chấm lại đúng tin đó sau khi sửa: lên 69 điểm, qua ngưỡng gửi 55."""
+        from pipeline.classifier import ClassificationPipeline
+        from spiders.nhatot import NhatotSpider
+
+        l = NhatotSpider({}).parse_listing(_anh_bay_raw())
+        l.listing_age_hours = 0.0          # bot bắt được ngay lúc tin vừa đăng
+        l.poster_total_listings = 2        # trang tài khoản: active=2
+        l.same_session_account_count = 2   # 2 tin, sau khi bỏ trùng giữa 2 URL
+
+        r = ClassificationPipeline().classify(l)
+
+        assert "description_many_emojis" not in r.signals_fired
+        assert "photo_count_high" not in r.signals_fired
+        assert "same_session_multi_listing" not in r.signals_fired
+        assert r.signals_fired["text_marketing_superlatives"] == -10
+        assert r.signals_fired["text_owner_language"] == 5
+        assert r.score == 69
+        assert r.label == "chinh_chu"

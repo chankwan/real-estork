@@ -161,17 +161,26 @@ def check_text_owner_language(ctx: SignalContext) -> bool:
     keywords = [
         "nhà tôi", "chính chủ cần cho thuê", "liên hệ trực tiếp",
         "chủ nhà cho thuê", "tôi cần cho thuê", "nhà chính chủ",
-        "cho thuê trực tiếp", "không qua trung gian",
+        "cho thuê trực tiếp", "không qua trung gian", "liên hệ chính chủ",
     ]
     return any(kw in ctx.description_lower for kw in keywords)
 
-def check_text_marketing_superlatives(ctx: SignalContext) -> bool:
+def check_text_marketing_superlatives(ctx: SignalContext) -> float:
+    """Trả về mức (0 / 0.5 / 1.0), classifier nhân với weight.
+
+    Một chữ quảng cáo lẻ ("đắc địa") chỉ trừ nửa — chủ tự viết mô tả cũng hay
+    lỡ một chữ. Từ 2 chữ trở lên mới trừ đủ: đó mới là văn quảng cáo thật.
+    Ca gốc: tin nhatot 135317229 (chủ cho thuê nguyên tòa) mất đủ −20 vì một chữ.
+    """
     keywords = [
         "đắc địa", "siêu hot", "sinh lợi cao", "vị trí vàng",
         "không thể bỏ lỡ", "cơ hội hiếm có", "giá tốt nhất",
         "mặt bằng đẹp nhất", "vị trí chiến lược", "cơ hội đầu tư",
     ]
-    return any(kw in ctx.description_lower for kw in keywords)
+    khop = sum(1 for kw in keywords if kw in ctx.description_lower)
+    if khop >= 2:
+        return 1.0
+    return 0.5 if khop == 1 else 0.0
 
 def check_text_commission_mention(ctx: SignalContext) -> bool:
     keywords = [
@@ -247,11 +256,17 @@ def check_description_many_emojis(ctx: SignalContext) -> bool:
     import re
     global _EMOJI_PATTERN
     if _EMOJI_PATTERN is None:
+        # Chỉ các dải emoji/biểu tượng thật. Bản cũ có thêm dải U+2000..U+3300 —
+        # dải đó chứa cả dấu câu thường (• – … “ ”), nên mô tả gạch đầu dòng
+        # bị đếm thành "nhiều emoji" và dính −15 (tin nhatot 135317229: 7
+        # "emoji" không cái nào là emoji thật).
         _EMOJI_PATTERN = re.compile(
-            "[\U0001F300-\U0001F9FF"   # symbols, pictographs, emoticons
-            "\U00002702-\U000027B0"    # dingbats
-            "\U0000FE00-\U0000FE0F"    # variation selectors
-            "\U00003030\U000000A9\U000000AE\U00002000-\U00003300]+",
+            "[\U0001F000-\U0001FAFF"   # pictographs, emoticons, 🟢 🫶 🆕 ...
+            "\U00002300-\U000023FF"    # ⌚ ⏰ ⏳
+            "\U00002600-\U000027BF"    # ☎ ★ ✅ ✔ ➡ (misc symbols + dingbats)
+            "\U00002B00-\U00002BFF"    # ⭐ ⬆
+            "\U0000FE00-\U0000FE0F"    # variation selectors (đi kèm emoji)
+            "\U00003030\U000000A9\U000000AE]+",
             flags=re.UNICODE,
         )
     text = ctx.title + " " + ctx.description

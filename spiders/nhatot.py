@@ -20,7 +20,7 @@ from typing import Any
 
 from loguru import logger
 
-from spiders.base import BaseSpider, RawListing
+from spiders.base import BaseSpider, RawListing, bo_tin_trung
 
 BASE_URL = "https://www.nhatot.com"
 LISTING_URL_TPL = "https://www.nhatot.com/thue-bat-dong-san-tp-ho-chi-minh/{list_id}.htm"
@@ -69,6 +69,8 @@ class NhatotSpider(BaseSpider):
             all_listings.extend(url_listings)
             if idx < len(self.start_urls) - 1:
                 await asyncio.sleep(self.request_delay)
+
+        all_listings = bo_tin_trung(all_listings)
 
         # Post-process: count listings per account (global across URLs)
         # Primary key: poster_account_id (stable numeric ID from platform)
@@ -314,18 +316,27 @@ class NhatotSpider(BaseSpider):
             is_main_street = raw.get("is_main_street", None)  # True=mặt tiền, False=hẻm, None=unknown
             is_vip = bool(raw.get("is_sticky", False))         # Paid sticky ad = VIP tier
 
-            # Images
+            # Images — so trùng theo TÊN FILE, không theo cả URL: `image` là ảnh
+            # đại diện bản nhỏ (`preset:listing`), còn `images[0]` là chính ảnh đó
+            # bản lớn (`preset:view`). So cả URL thì một ảnh thành hai → tin 7 ảnh
+            # đếm ra 8 và dính photo_count_high (tin 135317229, 18/10).
             images: list[str] = []
+            ten_file: set[str] = set()
+
+            def _them_anh(src: str) -> None:
+                ten = src.rsplit("/", 1)[-1]
+                if src and ten not in ten_file:
+                    ten_file.add(ten)
+                    images.append(src)
+
             img = raw.get("image", None)
             if img:
-                images.append(img)
+                _them_anh(img)
             for extra_img in raw.get("images", []):
-                if isinstance(extra_img, str) and extra_img not in images:
-                    images.append(extra_img)
+                if isinstance(extra_img, str):
+                    _them_anh(extra_img)
                 elif isinstance(extra_img, dict):
-                    src = extra_img.get("url", extra_img.get("src", ""))
-                    if src and src not in images:
-                        images.append(src)
+                    _them_anh(extra_img.get("url", extra_img.get("src", "")))
 
             # Posted time — web uses relative "date" string, API uses list_time ms
             posted_at = None
