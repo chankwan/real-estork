@@ -333,7 +333,8 @@ signals:
 
   floor_ambiguous:
     description: "Không rõ tầng — chính chủ thường lazy, không ghi kỹ"
-    weight: +3
+    weight: 0             # TẮT 2026-10-26: cộng điểm vì THIẾU dữ liệu (nhatot 62% tin
+                          # không có tầng) — trái nguyên tắc "không biết thì không chấm".
     check: "floor_level is None"
 
   floor_upper_level:

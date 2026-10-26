@@ -1810,7 +1810,7 @@ class TestTinAnhBayKhongBiTruOan:
         assert muc("đắc địa, vị trí vàng") == 1.0
 
     def test_tin_anh_bay_qua_nguong_gui(self):
-        """Chấm lại đúng tin đó sau khi sửa: lên 69 điểm, qua ngưỡng gửi 55."""
+        """Chấm lại đúng tin đó sau khi sửa: lên 66 điểm, qua ngưỡng gửi 55."""
         from pipeline.classifier import ClassificationPipeline
         from spiders.nhatot import NhatotSpider
 
@@ -1826,7 +1826,7 @@ class TestTinAnhBayKhongBiTruOan:
         assert "same_session_multi_listing" not in r.signals_fired
         assert r.signals_fired["text_marketing_superlatives"] == -10
         assert r.signals_fired["text_owner_language"] == 5
-        assert r.score == 69
+        assert r.score == 66   # 69 − 3: bỏ floor_ambiguous (2026-10-26)
         assert r.label == "chinh_chu"
 
 
@@ -1869,6 +1869,24 @@ class TestTuKhoaVaQuyCachChamDongBo:
         r = ClassificationPipeline().classify(make_listing(source="muaban", images=[]))
         assert "photo_count_low" not in r.signals_fired
         assert "floor_ambiguous" not in r.signals_fired
+
+    def test_bds_khong_con_cong_it_anh(self):
+        from pipeline.classifier import ClassificationPipeline
+        r = ClassificationPipeline().classify(make_listing(source="batdongsan", images=["a.jpg"]))
+        assert "photo_count_low" not in r.signals_fired
+
+    def test_khong_cong_diem_vi_thieu_hoac_bia_du_lieu(self):
+        """BDS: giờ đăng là 12:00 do spider tự gán → không chấm giờ/tuổi tin.
+        Mọi sàn: không rõ tầng không được cộng."""
+        from datetime import datetime, timezone
+        from pipeline.classifier import ClassificationPipeline
+        c = ClassificationPipeline()
+        bds = make_listing(source="batdongsan", floor_level=None, listing_age_hours=1.0,
+                           posted_at=datetime(2026, 10, 25, 5, 0, tzinfo=timezone.utc))
+        fired = c.classify(bds).signals_fired
+        for s in ("posted_outside_business_hours", "listing_very_fresh", "listing_fresh", "floor_ambiguous"):
+            assert s not in fired
+        assert "floor_ambiguous" not in c.classify(make_listing(floor_level=None)).signals_fired
 
     def test_moi_signal_tu_khoa_dang_bat_deu_co_tu_khoa(self):
         from pipeline.classifier import ClassificationPipeline, KEYWORD_SIGNALS

@@ -6,8 +6,9 @@
 #   - Batdongsan thiếu 3 nhatot-specific signals (phone_hidden_owner,
 #     account_type_personal, account_type_business) → thresholds nới lỏng
 #   - Thêm 5 signals BDS-specific dùng data từ guru profile + pro-agent badge
-#   - photo_count_* không fire vì list page chỉ có 1-2 thumbnail
-#   - Post-early-stop đã chỉ lấy tin "hôm nay" → listing_very_fresh/fresh luôn fire
+#   - photo_count_* không khai: list page chỉ có 1 thumbnail nên fire cho mọi tin
+#   - listing_very_fresh/fresh, posted_outside_business_hours, floor_ambiguous không
+#     khai (2026-10-26): giờ đăng do spider tự gán 12:00 / cộng vì thiếu dữ liệu
 
 version: 1
 threshold_chinh_chu: 60         # nới từ 65 → 60 (thiếu 3 nhatot-only signals)
@@ -103,9 +104,9 @@ signals:
   # POSTING PATTERN SIGNALS
   # ===================================================
 
-  posted_outside_business_hours:
-    description: "Đăng ngoài giờ hành chính — chủ nhà đăng sau giờ làm"
-    weight: +5
+  # posted_outside_business_hours: BỎ (2026-10-26). BDS chỉ ghi "hôm nay", spider
+  # tự gán 12:00 trưa cho mọi tin (1000/1000 tin 7 ngày cùng giờ) → giờ đăng là
+  # số máy sinh, fire 99% tin.
 
   account_name_broker_keywords:
     description: "Tên tài khoản chứa từ khóa môi giới — BDS có nhiều 'Quỳnh Hương BĐS'"
@@ -119,13 +120,9 @@ signals:
   # LISTING AGE SIGNALS (post-early-stop luôn 'hôm nay')
   # ===================================================
 
-  listing_very_fresh:
-    description: "Tin mới <= 2h — instant alert priority"
-    weight: +10
-
-  listing_fresh:
-    description: "Tin 2-24h"
-    weight: +5
+  # listing_very_fresh / listing_fresh: BỎ (2026-10-26). Tuổi tin tính từ giờ
+  # 12:00 do spider tự gán (xem trên) → "rất mới" hay "mới" chỉ phụ thuộc lúc bot
+  # cào gần trưa hay không, không nói gì về tin. Early-stop đã chỉ lấy tin hôm nay.
 
   listing_stale:
     description: "Tin cũ > 7 ngày — không xảy ra sau early-stop, nhưng giữ để defensive"
@@ -139,9 +136,7 @@ signals:
     description: "Tầng trệt — cao nhất về nhu cầu"
     weight: +8
 
-  floor_ambiguous:
-    description: "Không rõ tầng — chính chủ thường lazy"
-    weight: +3
+  # floor_ambiguous: BỎ (2026-10-26) — cộng điểm vì THIẾU dữ liệu, fire 87% tin.
 
   floor_upper_level:
     description: "Lầu 3+ — ít nhu cầu"
@@ -171,9 +166,8 @@ signals:
     description: "Nhiều emoji (>=5) — format marketing môi giới"
     weight: -10           # -15 → -10 (2026-10-26, user: -15 hơi nặng)
 
-  photo_count_low:
-    description: "Ít ảnh (<= 5) — style amateur. List page BDS thường chỉ 1-2 thumbnail nên hay fire"
-    weight: +3           # giảm từ +5 vì dễ fire cho mọi tin
+  # photo_count_low: BỎ (2026-10-26). Trang danh sách BDS chỉ có 1 ảnh đại diện
+  # → 2022/2022 tin 7 ngày đều "ít ảnh" → +3 cho mọi tin, không phân biệt gì.
 
   # ===================================================
   # AI SIGNAL (optional supplement)
