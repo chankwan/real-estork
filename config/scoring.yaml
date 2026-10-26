@@ -103,6 +103,9 @@ signals:
   # ===================================================
   # TEXT-BASED SIGNALS
   # ===================================================
+  # `keywords:` dưới đây là NGUỒN DUY NHẤT — code đọc thẳng từ đây (từ 2026-10-26;
+  # trước đó code viết cứng danh sách riêng và các list này không có tác dụng).
+  # File theo sàn không khai `keywords:` thì dùng list ở file này.
 
   text_owner_language:
     description: "Description chứa ngôn ngữ chính chủ — giảm weight vì môi giới hay giả danh claim này"
@@ -116,6 +119,7 @@ signals:
       - "nhà chính chủ"
       - "cho thuê trực tiếp"
       - "không qua trung gian"
+      - "liên hệ chính chủ"        # thêm 2026-10-25 (tin nhatot 135317229)
     check: "any(kw in description_lower for kw in keywords)"
 
   text_marketing_superlatives:
@@ -197,7 +201,36 @@ signals:
   account_name_broker_keywords:
     description: "Tên tài khoản chứa từ khóa môi giới/tổ chức (BĐS, địa ốc, công ty, doanh nghiệp...)"
     weight: -20
-    check: "any(kw in contact_name.lower() for kw in broker_keywords)"
+    keywords:
+      # Nghề BĐS
+      - "môi giới"
+      - "moi gioi"
+      - "bds"
+      - "bđs"
+      - "bất động sản"
+      - "bat dong san"
+      - "địa ốc"
+      - "dia oc"
+      - "nhà đất"
+      - "nha dat"
+      - "kinh doanh bđs"
+      # Tổ chức / pháp nhân
+      - "công ty"
+      - "cong ty"
+      - "doanh nghiệp"
+      - "doanh nghiep"
+      - "tnhh"
+      - "cổ phần"
+      # Tư vấn / chuyên nghiệp
+      - "tư vấn"
+      - "tu van"
+      - "chuyên viên"
+      - "chuyen vien"
+      # Từ tiếng Anh hiếm dùng nhưng vẫn giữ phòng trường hợp sàn lớn
+      - "realty"
+      - "property"
+      - "land"
+    check: "any(kw in contact_name.lower() for kw in keywords)"
 
   same_session_multi_listing:
     description: "Cùng tài khoản đăng >2 tin trong cùng batch crawl — broker pattern (2 tin có thể chủ 2 mặt bằng)"

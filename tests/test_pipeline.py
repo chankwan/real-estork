@@ -1799,9 +1799,15 @@ class TestTinAnhBayKhongBiTruOan:
 
     def test_mot_chu_quang_cao_tru_nua_hai_chu_tru_du(self):
         from pipeline.signals import SignalContext, check_text_marketing_superlatives as f
-        assert f(SignalContext.from_listing(make_listing(description="nhà thường"))) == 0.0
-        assert f(SignalContext.from_listing(make_listing(description="vị trí đắc địa"))) == 0.5
-        assert f(SignalContext.from_listing(make_listing(description="đắc địa, vị trí vàng"))) == 1.0
+
+        def muc(mo_ta):
+            ctx = SignalContext.from_listing(make_listing(description=mo_ta))
+            ctx.keywords = ["đắc địa", "vị trí vàng"]
+            return f(ctx)
+
+        assert muc("nhà thường") == 0.0
+        assert muc("vị trí đắc địa") == 0.5
+        assert muc("đắc địa, vị trí vàng") == 1.0
 
     def test_tin_anh_bay_qua_nguong_gui(self):
         """Chấm lại đúng tin đó sau khi sửa: lên 69 điểm, qua ngưỡng gửi 55."""
@@ -1822,3 +1828,33 @@ class TestTinAnhBayKhongBiTruOan:
         assert r.signals_fired["text_owner_language"] == 5
         assert r.score == 69
         assert r.label == "chinh_chu"
+
+
+class TestTuKhoaVaQuyCachChamDongBo:
+    """2026-10-26: từ khoá đọc từ config; muaban chấm cùng quy cách; BDS bỏ +3 ảnh."""
+
+    def test_tu_khoa_doc_tu_config_khong_con_viet_cung(self):
+        """'siêu phẩm' chỉ có trong YAML, list viết cứng cũ không có — giờ phải bắt được."""
+        from pipeline.classifier import ClassificationPipeline
+        r = ClassificationPipeline().classify(make_listing(description="siêu phẩm mặt bằng"))
+        assert r.signals_fired.get("text_marketing_superlatives") == -10
+
+    def test_sua_config_la_doi_hanh_vi(self):
+        from pipeline.classifier import ClassificationPipeline
+        c = ClassificationPipeline()
+        c._configs["_default"]["signals"]["text_commission_mention"]["keywords"] = ["tu-khoa-thu"]
+        assert "text_commission_mention" in c.classify(make_listing(description="có tu-khoa-thu")).signals_fired
+        assert "text_commission_mention" not in c.classify(make_listing(description="có hoa hồng")).signals_fired
+
+    def test_ten_moi_gioi_doc_tu_config(self):
+        from pipeline.classifier import ClassificationPipeline
+        r = ClassificationPipeline().classify(make_listing(contact_name="Hương BĐS Quận 1"))
+        assert "account_name_broker_keywords" in r.signals_fired
+
+    def test_moi_signal_tu_khoa_dang_bat_deu_co_tu_khoa(self):
+        from pipeline.classifier import ClassificationPipeline, KEYWORD_SIGNALS
+        c = ClassificationPipeline()
+        for ten, cfg in c._configs.items():
+            for sig, sc in cfg.get("signals", {}).items():
+                if sig in KEYWORD_SIGNALS and isinstance(sc, dict) and sc.get("weight", 0) != 0:
+                    assert c._keywords_for(cfg, sig), f"{ten}/{sig} thiếu keywords"

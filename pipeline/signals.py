@@ -12,7 +12,7 @@ To add a new signal:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -66,6 +66,11 @@ class SignalContext:
 
     # AI result (optional, filled async)
     ai_owner_probability: float | None = None
+
+    # Từ khoá của signal ĐANG chạy — classifier nạp từ config ngay trước mỗi lần
+    # gọi (khoá `keywords:` của signal đó). Signal dò từ khoá đọc ở đây, không
+    # viết cứng danh sách trong code nữa.
+    keywords: list[str] = field(default_factory=list)
 
     # Computed helpers
     description_lower: str = ""
@@ -158,12 +163,7 @@ def check_phone_known_broker(ctx: SignalContext) -> bool:
     return ctx.phone_is_known_broker
 
 def check_text_owner_language(ctx: SignalContext) -> bool:
-    keywords = [
-        "nhà tôi", "chính chủ cần cho thuê", "liên hệ trực tiếp",
-        "chủ nhà cho thuê", "tôi cần cho thuê", "nhà chính chủ",
-        "cho thuê trực tiếp", "không qua trung gian", "liên hệ chính chủ",
-    ]
-    return any(kw in ctx.description_lower for kw in keywords)
+    return any(kw in ctx.description_lower for kw in ctx.keywords)
 
 def check_text_marketing_superlatives(ctx: SignalContext) -> float:
     """Trả về mức (0 / 0.5 / 1.0), classifier nhân với weight.
@@ -172,29 +172,16 @@ def check_text_marketing_superlatives(ctx: SignalContext) -> float:
     lỡ một chữ. Từ 2 chữ trở lên mới trừ đủ: đó mới là văn quảng cáo thật.
     Ca gốc: tin nhatot 135317229 (chủ cho thuê nguyên tòa) mất đủ −20 vì một chữ.
     """
-    keywords = [
-        "đắc địa", "siêu hot", "sinh lợi cao", "vị trí vàng",
-        "không thể bỏ lỡ", "cơ hội hiếm có", "giá tốt nhất",
-        "mặt bằng đẹp nhất", "vị trí chiến lược", "cơ hội đầu tư",
-    ]
-    khop = sum(1 for kw in keywords if kw in ctx.description_lower)
+    khop = sum(1 for kw in ctx.keywords if kw in ctx.description_lower)
     if khop >= 2:
         return 1.0
     return 0.5 if khop == 1 else 0.0
 
 def check_text_commission_mention(ctx: SignalContext) -> bool:
-    keywords = [
-        "hoa hồng", "commission", "phí môi giới", "% cho sale",
-        "có hoa hồng", "hỗ trợ hoa hồng",
-    ]
-    return any(kw in ctx.description_lower for kw in keywords)
+    return any(kw in ctx.description_lower for kw in ctx.keywords)
 
 def check_text_agent_language(ctx: SignalContext) -> bool:
-    keywords = [
-        "liên hệ môi giới", "chuyên bds", "chuyên bất động sản",
-        "hotline:", "zalo:", "chuyên gia tư vấn",
-    ]
-    return any(kw in ctx.description_lower for kw in keywords)
+    return any(kw in ctx.description_lower for kw in ctx.keywords)
 
 def check_photo_count_low(ctx: SignalContext) -> bool:
     return len(ctx.images) <= 5
@@ -218,22 +205,10 @@ def check_seller_high_sold_count(ctx: SignalContext) -> bool:
     """Lịch sử đăng >= 20 tin — rõ ràng là môi giới chuyên nghiệp. 0 = không có data → không fire."""
     return ctx.poster_sold_listings >= 20
 
-_BROKER_NAME_KEYWORDS = [
-    # Nghề BĐS
-    "môi giới", "moi gioi", "bds", "bđs", "bất động sản", "bat dong san",
-    "địa ốc", "dia oc", "nhà đất", "nha dat", "kinh doanh bđs",
-    # Tổ chức / pháp nhân
-    "công ty", "cong ty", "doanh nghiệp", "doanh nghiep", "tnhh", "cổ phần",
-    # Tư vấn / chuyên nghiệp
-    "tư vấn", "tu van", "chuyên viên", "chuyen vien",
-    # Từ tiếng Anh hiếm dùng nhưng vẫn giữ phòng trường hợp sàn lớn
-    "realty", "property", "land",
-]
-
 def check_account_name_broker_keywords(ctx: SignalContext) -> bool:
     """Tên tài khoản chứa từ khóa môi giới — dấu hiệu rõ ràng."""
     name = ctx.contact_name.lower()
-    return any(kw in name for kw in _BROKER_NAME_KEYWORDS)
+    return any(kw in name for kw in ctx.keywords)
 
 def check_same_session_multi_listing(ctx: SignalContext) -> bool:
     """Cùng 1 tài khoản đăng >2 tin trong cùng batch crawl — broker pattern. 2 tin có thể chủ có 2 mặt bằng."""

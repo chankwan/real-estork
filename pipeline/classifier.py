@@ -20,6 +20,18 @@ from pipeline.signals import SIGNAL_FUNCTIONS, SignalContext
 # config/scoring_{source}.yaml if the file exists (falls back to default otherwise).
 PER_SOURCE_CONFIGS: tuple[str, ...] = ("batdongsan", "muaban", "facebook_groups")
 
+# Signal dò từ khoá. Danh sách từ khoá nằm ở khoá `keywords:` của signal trong
+# config/scoring.yaml; file theo sàn khai `keywords:` riêng thì dùng của sàn,
+# không khai thì dùng danh sách chung. Trước 2026-10-26 các danh sách này viết
+# cứng trong pipeline/signals.py và `keywords:` trong YAML chỉ để trang trí.
+KEYWORD_SIGNALS: frozenset[str] = frozenset({
+    "text_owner_language",
+    "text_marketing_superlatives",
+    "text_commission_mention",
+    "text_agent_language",
+    "account_name_broker_keywords",
+})
+
 # Classification labels
 LABEL_CHINH_CHU = "chinh_chu"
 LABEL_CAN_XAC_MINH = "can_xac_minh"
@@ -89,6 +101,23 @@ class ClassificationPipeline:
             else:
                 logger.debug(f"[classifier] No per-source config for '{source}' at {path}")
 
+        # Signal dò từ khoá mà không có từ khoá nào thì không bao giờ fire — im
+        # lặng mất điểm. Báo ngay lúc khởi động thay vì để lọt.
+        for name, cfg in self._configs.items():
+            for sig, sig_cfg in (cfg.get("signals") or {}).items():
+                if (sig in KEYWORD_SIGNALS and isinstance(sig_cfg, dict)
+                        and sig_cfg.get("weight", 0) != 0
+                        and not self._keywords_for(cfg, sig)):
+                    logger.error(f"[classifier] {name}: signal '{sig}' thiếu `keywords:` trong config")
+
+    def _keywords_for(self, config: dict[str, Any], signal_name: str) -> list[str]:
+        """Từ khoá của signal: file theo sàn nếu có khai, không thì file chung."""
+        own = (config.get("signals") or {}).get(signal_name) or {}
+        if own.get("keywords"):
+            return own["keywords"]
+        default = (self._configs["_default"].get("signals") or {}).get(signal_name) or {}
+        return default.get("keywords") or []
+
     def _config_for(self, source: str | None) -> dict[str, Any]:
         """Return the scoring config dict for a given source, with default fallback."""
         if source and source in self._configs:
@@ -140,6 +169,9 @@ class ClassificationPipeline:
             if check_fn is None:
                 logger.warning(f"[classifier] No function for signal '{signal_name}'")
                 continue
+
+            if signal_name in KEYWORD_SIGNALS:
+                ctx.keywords = self._keywords_for(config, signal_name)
 
             try:
                 result = check_fn(ctx)
