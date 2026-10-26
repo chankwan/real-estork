@@ -61,7 +61,8 @@ signals:
     weight: 0    # is_company=false is unreliable on Muaban
 
   text_owner_language:
-    weight: -5   # Brokers claim this often
+    weight: +5   # Đồng bộ các sàn (2026-10-26). Trước là −5 "môi giới hay giả
+                 # danh" — user chốt chấm một quy cách chung cho mọi sàn.
 
   # muaban_multi_active_listings (-40) / muaban_few_active_listings (+20): XOÁ
   # (2026-09-08). Cả hai đọc "số tin đăng của người bán" — muaban.net không công
@@ -124,3 +125,29 @@ signals:
 
   text_marketing_superlatives:
     weight: -20
+
+  # ── Đồng bộ quy cách chấm nội dung với nhatot/batdongsan (2026-10-26) ──
+  # Đo 7 ngày (867 tin muaban): emoji ≥5 fire 285 tin, mô tả >500 ký tự 169,
+  # ngôn ngữ môi giới 19, hoa hồng 5. Trong 52 tin đã gửi điểm ≥55 thì 7 tin
+  # sẽ tụt dưới ngưỡng — chủ yếu do emoji + mô tả dài.
+  description_many_emojis:
+    weight: -15
+
+  text_commission_mention:
+    weight: -15
+
+  text_agent_language:
+    weight: -10
+
+  description_too_short:
+    weight: +5
+
+  description_too_long:
+    weight: -5
+
+  # CỐ Ý KHÔNG khai, dù sàn khác có:
+  #   photo_count_low/high — trang danh sách muaban chỉ trả vài ảnh bìa: 867/867
+  #     tin ≤5 ảnh → +5 cho mọi tin, không phân biệt được gì.
+  #   floor_* — spider muaban không đọc tầng → floor_ambiguous +3 cho mọi tin.
+  #   posted_outside_business_hours — giờ trên muaban là giờ ĐẨY tin, không phải
+  #     giờ đăng; đẩy tay đã được thưởng ở manually_bumped.

@@ -1851,6 +1851,25 @@ class TestTuKhoaVaQuyCachChamDongBo:
         r = ClassificationPipeline().classify(make_listing(contact_name="Hương BĐS Quận 1"))
         assert "account_name_broker_keywords" in r.signals_fired
 
+    def test_muaban_lien_he_chinh_chu_duoc_cong(self):
+        from pipeline.classifier import ClassificationPipeline
+        r = ClassificationPipeline().classify(
+            make_listing(source="muaban", description="cho thuê mặt bằng, liên hệ chính chủ"))
+        assert r.signals_fired["text_owner_language"] == 5
+
+    def test_muaban_nhieu_emoji_bi_tru(self):
+        from pipeline.classifier import ClassificationPipeline
+        r = ClassificationPipeline().classify(
+            make_listing(source="muaban", description="🔥 nhà 💰 giá 📍 chỗ ✅ ok 🏠 cho thuê"))
+        assert r.signals_fired["description_many_emojis"] == -15
+
+    def test_muaban_khong_cham_anh_va_tang(self):
+        """Muaban không có dữ liệu ảnh/tầng thật → không được fire cho mọi tin."""
+        from pipeline.classifier import ClassificationPipeline
+        r = ClassificationPipeline().classify(make_listing(source="muaban", images=[]))
+        assert "photo_count_low" not in r.signals_fired
+        assert "floor_ambiguous" not in r.signals_fired
+
     def test_moi_signal_tu_khoa_dang_bat_deu_co_tu_khoa(self):
         from pipeline.classifier import ClassificationPipeline, KEYWORD_SIGNALS
         c = ClassificationPipeline()
