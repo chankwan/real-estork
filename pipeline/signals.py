@@ -13,7 +13,10 @@ To add a new signal:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta, timezone
 from typing import Any
+
+_VN_TZ = timezone(timedelta(hours=7))
 
 
 @dataclass
@@ -83,8 +86,15 @@ class SignalContext:
         self.title_lower = (self.title or "").lower()
         if self.posted_at:
             try:
-                self.posted_hour = self.posted_at.hour
-                self.is_weekend = self.posted_at.weekday() >= 5
+                # Giờ đăng phải là giờ VIỆT NAM. Spider trả datetime có múi giờ
+                # (nhatot: UTC) → trước 2026-10-26 đọc thẳng .hour ra giờ UTC, lệch
+                # 7 tiếng: tin 9h-14h VN bị coi là "ngoài giờ", tin 19h-24h VN thì
+                # không. Datetime không có múi giờ thì coi như đã là giờ VN.
+                t = self.posted_at
+                if t.tzinfo is not None:
+                    t = t.astimezone(_VN_TZ)
+                self.posted_hour = t.hour
+                self.is_weekend = t.weekday() >= 5
             except AttributeError:
                 pass
 

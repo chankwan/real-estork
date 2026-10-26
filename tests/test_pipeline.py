@@ -1895,3 +1895,13 @@ class TestTuKhoaVaQuyCachChamDongBo:
             for sig, sc in cfg.get("signals", {}).items():
                 if sig in KEYWORD_SIGNALS and isinstance(sc, dict) and sc.get("weight", 0) != 0:
                     assert c._keywords_for(cfg, sig), f"{ten}/{sig} thiếu keywords"
+
+    def test_gio_dang_tinh_theo_gio_viet_nam(self):
+        """nhatot trả giờ UTC. 03:00 UTC = 10h sáng VN (trong giờ); 13:00 UTC = 20h tối VN."""
+        from datetime import datetime, timezone
+        from pipeline.signals import SignalContext, check_posted_outside_business_hours as f
+        thu_ba = lambda h: datetime(2026, 10, 27, h, 0, tzinfo=timezone.utc)
+        assert not f(SignalContext.from_listing(make_listing(posted_at=thu_ba(3))))
+        assert f(SignalContext.from_listing(make_listing(posted_at=thu_ba(13))))
+        # Không có múi giờ = đã là giờ VN
+        assert not f(SignalContext.from_listing(make_listing(posted_at=datetime(2026, 10, 27, 10, 0))))
