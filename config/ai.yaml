@@ -28,7 +28,7 @@ ai:
     # bộ não AI chưa từng chạy một lần nào (0/114.344 tin có ai_result).
     base_url: "${CLIPROXY_URL}"
     api_key: "${CLIPROXY_TOKEN}"
-    model: "gemini-3.7-flash-high"
+    model: "gemini-3.8-flash-high"
     # model: "deepseek-web/deepseek-chat"   # Free unlimited
     # model: "qwen-web/qwen-max"            # Free tier
     # model: "kimi-web/kimi-chat"           # Free
