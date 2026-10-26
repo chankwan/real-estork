@@ -127,11 +127,11 @@ signals:
     weight: -20
 
   # ── Đồng bộ quy cách chấm nội dung với nhatot/batdongsan (2026-10-26) ──
-  # Đo 7 ngày (867 tin muaban): emoji ≥5 fire 285 tin, mô tả >500 ký tự 169,
+  # Đo 7 ngày (867 tin muaban): emoji ≥5 fire 285 tin (lúc đo trọng số -15), mô tả >500 ký tự 169,
   # ngôn ngữ môi giới 19, hoa hồng 5. Trong 52 tin đã gửi điểm ≥55 thì 7 tin
   # sẽ tụt dưới ngưỡng — chủ yếu do emoji + mô tả dài.
   description_many_emojis:
-    weight: -15
+    weight: -10   # -15 → -10 (2026-10-26, user: -15 hơi nặng)
 
   text_commission_mention:
     weight: -15

@@ -169,7 +169,7 @@ signals:
 
   description_many_emojis:
     description: "Nhiều emoji (>=5) — format marketing môi giới"
-    weight: -15
+    weight: -10           # -15 → -10 (2026-10-26, user: -15 hơi nặng)
 
   photo_count_low:
     description: "Ít ảnh (<= 5) — style amateur. List page BDS thường chỉ 1-2 thumbnail nên hay fire"

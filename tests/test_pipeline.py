@@ -1861,7 +1861,7 @@ class TestTuKhoaVaQuyCachChamDongBo:
         from pipeline.classifier import ClassificationPipeline
         r = ClassificationPipeline().classify(
             make_listing(source="muaban", description="🔥 nhà 💰 giá 📍 chỗ ✅ ok 🏠 cho thuê"))
-        assert r.signals_fired["description_many_emojis"] == -15
+        assert r.signals_fired["description_many_emojis"] == -10
 
     def test_muaban_khong_cham_anh_va_tang(self):
         """Muaban không có dữ liệu ảnh/tầng thật → không được fire cho mọi tin."""

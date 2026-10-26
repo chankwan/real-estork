@@ -239,7 +239,7 @@ signals:
 
   description_many_emojis:
     description: "Nhiều emoji (>=5) trong toàn bộ bài đăng (tiêu đề + mô tả) — format marketing môi giới"
-    weight: -15
+    weight: -10           # -15 → -10 (2026-10-26, user: -15 hơi nặng)
     check: "emoji_count >= 5"
 
   # phone_hidden_owner: DISABLED — Chotot account bị ban 2026-04-22, phone API không còn dùng
