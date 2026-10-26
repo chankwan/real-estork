@@ -387,6 +387,8 @@ def housekeeping(
     async def _bao(text: str) -> None:
         from notifications.telegram import TelegramNotifier
 
+        if dry_run:
+            return  # chạy thử là người đang ngồi xem màn hình — đừng báo động Telegram
         try:
             await TelegramNotifier().send_lifecycle(text)
         except Exception as e:
