@@ -158,16 +158,30 @@ class NhatotSpider(BaseSpider):
                     break
 
                 data = _json.loads(match.group(1))
-                adlisting = (
-                    data.get("props", {})
-                    .get("pageProps", {})
-                    .get("initialState", {})
-                    .get("adlisting", {})
+                # 12/11/2026 14:37 nhatot dời `initialState` từ props.pageProps
+                # lên thẳng props. Spider chỉ đọc chỗ cũ → 0 tin suốt 33 tiếng
+                # mà trang vẫn trả 200. Đọc chỗ mới trước, chỗ cũ làm dự phòng.
+                props = data.get("props", {})
+                state = (
+                    props.get("initialState")
+                    or props.get("pageProps", {}).get("initialState")
+                    or {}
                 )
+                adlisting = state.get("adlisting", {})
                 ads = adlisting.get("data", {}).get("ads", [])
 
                 if not ads:
-                    logger.info(f"[nhatot:{slug}] No ads on page {page_num}")
+                    # Trang 1 của danh mục cả TP.HCM không bao giờ trống thật —
+                    # trống nghĩa là không đọc ra dữ liệu. Tính là hỏng để chuông
+                    # "nền tảng đổi" kêu. Trang sau trống = hết tin, bình thường.
+                    if page_num == 1:
+                        self.bump_health("list_no_data")
+                        logger.warning(
+                            f"[nhatot:{slug}] Trang 1 không có tin — nghi nền tảng "
+                            f"đổi cấu trúc __NEXT_DATA__"
+                        )
+                    else:
+                        logger.info(f"[nhatot:{slug}] No ads on page {page_num}")
                     break
 
                 # Chốt chặn "phân trang chết" — cùng cơ chế với muaban (nơi lỗi

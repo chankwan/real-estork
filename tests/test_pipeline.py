@@ -1905,3 +1905,73 @@ class TestTuKhoaVaQuyCachChamDongBo:
         assert f(SignalContext.from_listing(make_listing(posted_at=thu_ba(13))))
         # Không có múi giờ = đã là giờ VN
         assert not f(SignalContext.from_listing(make_listing(posted_at=datetime(2026, 10, 27, 10, 0))))
+
+
+class TestDocNextDataHaiCho:
+    """12/11/2026 nhatot dời dữ liệu từ props.pageProps lên props → 0 tin 33 tiếng,
+    và vì trang 1 trống không bị tính là hỏng nên không chuông nào kêu."""
+
+    @staticmethod
+    def _trang(next_data: dict) -> str:
+        return ('<html><script id="__NEXT_DATA__" type="application/json">'
+                + json.dumps(next_data) + "</script></html>")
+
+    @staticmethod
+    def _ad(i: int) -> dict:
+        return {"list_id": 1000 + i, "subject": f"Cho thuê nhà {i}", "body": "nhà tôi",
+                "price": 30_000_000, "area_name": "Quận 3", "type": "u",
+                "account_name": f"chu {i}", "date": "1 giờ trước"}
+
+    def _chay_nhatot(self, monkeypatch, next_data: dict):
+        import scrapling
+        from spiders.nhatot import NhatotSpider
+
+        class _Page:
+            html_content = self._trang(next_data)
+
+        monkeypatch.setattr(scrapling.StealthyFetcher, "fetch", staticmethod(lambda *a, **k: _Page()))
+        sp = NhatotSpider({"url": "https://www.nhatot.com/x?f=p", "max_pages": 1,
+                           "request_delay_seconds": 0})
+        async def _chay():
+            return await sp._fetch_pages_from(sp.start_url, asyncio.get_running_loop())
+        return asyncio.run(_chay()), sp.cycle_health
+
+    def test_nhatot_cau_truc_moi(self, monkeypatch):
+        ls, health = self._chay_nhatot(monkeypatch, {"props": {"initialState": {
+            "adlisting": {"data": {"ads": [self._ad(i) for i in range(3)]}}}}})
+        assert len(ls) == 3 and health.get("list_pages_ok") == 1
+
+    def test_nhatot_cau_truc_cu_van_doc_duoc(self, monkeypatch):
+        ls, _ = self._chay_nhatot(monkeypatch, {"props": {"pageProps": {"initialState": {
+            "adlisting": {"data": {"ads": [self._ad(i) for i in range(2)]}}}}}})
+        assert len(ls) == 2
+
+    def test_nhatot_trang_1_trong_tinh_la_mat_du_lieu(self, monkeypatch):
+        ls, health = self._chay_nhatot(monkeypatch, {"props": {"pageProps": {"initialProps": {}}}})
+        assert ls == [] and health.get("list_no_data") == 1
+
+    def _chay_muaban(self, next_data: dict):
+        from spiders.muaban import MuabanSpider
+
+        class _Resp:
+            status_code = 200
+            text = self._trang(next_data)
+
+        class _Session:
+            async def get(self, *a, **k):
+                return _Resp()
+
+        sp = MuabanSpider({"urls": ["https://muaban.net/x?sort=1"], "max_pages": 1,
+                           "request_delay_seconds": 0})
+        asyncio.run(sp._fetch_pages_from(_Session(), sp.start_urls[0]))
+        return sp.cycle_health
+
+    def test_muaban_trang_1_trong_tinh_la_mat_du_lieu(self):
+        health = self._chay_muaban({"props": {"pageProps": {}}})
+        assert health.get("list_no_data") == 1
+
+    def test_muaban_doc_ca_hai_cho(self):
+        from spiders.muaban import _classified
+        assert _classified({"props": {"pageProps": {"classified": {"items": [1]}}}}) == {"items": [1]}
+        assert _classified({"props": {"classified": {"items": [2]}}}) == {"items": [2]}
+        assert _classified({}) == {}

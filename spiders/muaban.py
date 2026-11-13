@@ -50,6 +50,17 @@ _PHUT_CUOI_LUOT_QUET = 10
 _CURL_HEADERS = {"Referer": "https://www.google.com/"}
 
 
+def _classified(next_data: dict) -> dict:
+    """Khối `classified` trong __NEXT_DATA__, đọc được cả hai chỗ.
+
+    Nhatot (cùng dựng bằng Next.js) ngày 12/11/2026 dời dữ liệu từ
+    props.pageProps lên thẳng props, spider đọc chỗ cũ ra 0 tin suốt 33 tiếng.
+    Muaban chưa đổi, nhưng đọc sẵn cả chỗ mới để khỏi gãy theo cùng kiểu.
+    """
+    props = next_data.get("props", {})
+    return props.get("pageProps", {}).get("classified") or props.get("classified") or {}
+
+
 class MuabanSpider(BaseSpider):
     """Spider for muaban.net — curl_cffi Firefox133, no browser required."""
 
@@ -164,15 +175,19 @@ class MuabanSpider(BaseSpider):
                     break
 
                 data = json.loads(match.group(1))
-                items = (
-                    data.get("props", {})
-                    .get("pageProps", {})
-                    .get("classified", {})
-                    .get("items", [])
-                )
+                items = _classified(data).get("items", [])
 
                 if not items:
-                    logger.info(f"[muaban:{slug}] No listings on page {page_num}")
+                    # Cùng lý do với nhatot: trang 1 trống = không đọc ra dữ
+                    # liệu, không phải hết tin. Trang sau trống mới là hết tin.
+                    if page_num == 1:
+                        self.bump_health("list_no_data")
+                        logger.warning(
+                            f"[muaban:{slug}] Trang 1 không có tin — nghi nền tảng "
+                            f"đổi cấu trúc __NEXT_DATA__"
+                        )
+                    else:
+                        logger.info(f"[muaban:{slug}] No listings on page {page_num}")
                     break
 
                 # ── Chốt chặn "phân trang chết" ───────────────────────────
@@ -312,12 +327,7 @@ class MuabanSpider(BaseSpider):
             if not match:
                 return
 
-            classified = (
-                json.loads(match.group(1))
-                .get("props", {})
-                .get("pageProps", {})
-                .get("classified", {})
-            )
+            classified = _classified(json.loads(match.group(1)))
 
             # contact_name
             if not listing.contact_name:
