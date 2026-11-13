@@ -502,6 +502,28 @@ class BatdongsanSpider(BaseSpider):
             self.cycle_health["detail_cf"] = self.cycle_health.get("detail_cf", 0) + 1
             return
 
+        # Tin đang ẩn (vừa sửa, chờ duyệt lại...): link tin bị chuyển hướng về
+        # trang danh mục, vẫn trả 200. Ca 13/11/2026 tin pr46540707: bot đọc
+        # trang danh mục như trang chi tiết, không thấy số tin đăng, hoãn 3 lần
+        # rồi đẩy vào hàng duyệt tay — trong khi người đăng là môi giới 108 tin.
+        # Link cuối không còn "pr<id>" = không phải trang của tin này.
+        final_url = getattr(page, "url", "") or ""
+        listing.detail_hidden = bool(final_url) and f"pr{listing.source_id}" not in final_url
+        if listing.detail_hidden:
+            logger.info(
+                f"[batdongsan] {listing.source_id}: link bị chuyển hướng sang "
+                f"{final_url[:80]} — tin đang ẩn, thử lại sau"
+            )
+            self.cycle_health["detail_hidden"] = self.cycle_health.get("detail_hidden", 0) + 1
+            return
+
+        # Badge ngay trên trang chi tiết. Trang danh sách đã lọc theo class
+        # re__pro-agent, nhưng tin đi đường thử lại không qua trang danh sách.
+        for el in page.css(".re__ldp-agent-desc"):
+            if "chuyên nghiệp" in (el.text or "").lower():
+                listing.has_pro_agent_badge = True
+                break
+
         # Phone: BDS không embed số điện thoại trong HTML — chỉ có encrypted `raw`
         # attribute dùng để gọi DecryptPhone API (đã bỏ). listing.phone luôn rỗng.
 

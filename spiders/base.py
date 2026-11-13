@@ -49,6 +49,8 @@ class RawListing:
     poster_profile_hash: str | None = None   # batdongsan guru.batdongsan.com.vn/pa/{hash} identifier
     poster_join_year: int | None = None      # Year the poster joined the platform (absolute year, not relative)
     has_pro_agent_badge: bool = False        # "Môi giới chuyên nghiệp" badge detected on list/detail page
+    detail_hidden: bool = False              # batdongsan: link tin bị chuyển hướng sang trang khác
+                                             # (tin đang ẩn/chờ duyệt) → không đọc được gì về người bán
     is_vip: bool = False                     # True nếu card có VIP tier (silver/gold/diamond) — dùng cho early-stop logic
     manually_bumped: bool = False            # muaban: dấu thời gian nằm NGOÀI lượt quét nửa đêm
                                              # của sàn → có người thật vừa đẩy tin. Xem

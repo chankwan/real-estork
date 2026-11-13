@@ -569,6 +569,24 @@ class RealEstorkAgent:
             if listing.phone:
                 self.db.upsert_phone(listing.phone, listing.source)
             return "veto_broker"
+
+        # ── Hard broker veto 3: badge "Môi giới chuyên nghiệp" (batdongsan) ──
+        # Chính sàn gắn nhãn môi giới → không cần biết số tin đăng nữa.
+        if getattr(listing, "has_pro_agent_badge", False):
+            logger.info(
+                f"[orchestrator] BROKER VETO badge môi giới chuyên nghiệp "
+                f"'{listing.contact_name}' {listing.source}/{listing.source_id}"
+            )
+            listing_data = listing.to_dict()
+            listing_data.update({
+                "address_normalized": listing.address,
+                "classification_score": 0,
+                "classification_label": "moi_gioi",
+                "status": "auto_vetoed_broker",
+            })
+            if not self.db.upsert_listing(listing_data):
+                self._spool_listing(listing_data)
+            return "veto_broker"
         # ─────────────────────────────────────────────────────────────────
 
         # Get phone stats for classification
@@ -841,7 +859,9 @@ class RealEstorkAgent:
             for listing in to_process:
                 try:
                     # Chưa biết người bán có bao nhiêu tin đăng → hoãn, không alert.
-                    if _bds_poster_count_unknown(listing):
+                    # Có badge "Môi giới chuyên nghiệp" thì khỏi chờ số —
+                    # _process_listing loại thẳng.
+                    if _bds_poster_count_unknown(listing) and not listing.has_pro_agent_badge:
                         self._queue_bds_pending(listing)
                         skip_reasons["chua_xac_minh_nguoi_ban"] += 1
                         continue
@@ -897,7 +917,7 @@ class RealEstorkAgent:
         """
         resolved: list[Any] = []
         for listing, attempts in pending:
-            if _bds_poster_count_unknown(listing):
+            if _bds_poster_count_unknown(listing) and not listing.has_pro_agent_badge:
                 self._queue_bds_pending(listing, attempts)
             else:
                 resolved.append(listing)
@@ -1172,11 +1192,20 @@ class RealEstorkAgent:
             )
             return
 
-        logger.info(
-            f"[orchestrator] batdongsan/{listing.source_id}: bỏ cuộc sau {attempts} "
-            f"lần thử đọc số tin đăng — lưu DB, không alert, đưa vào hàng duyệt tay"
-        )
-        self._bds_review_batch.append(listing)
+        if getattr(listing, "detail_hidden", False):
+            # Tin vẫn đang ẩn sau mọi lượt thử: người duyệt mở link cũng chẳng
+            # thấy gì để quyết, nên chỉ lưu DB. Đánh đổi: đã lưu thì lớp chống
+            # trùng bỏ qua tin này về sau, kể cả khi nó hiện lại.
+            logger.info(
+                f"[orchestrator] batdongsan/{listing.source_id}: tin vẫn đang ẩn "
+                f"sau {attempts} lần thử — lưu DB, không alert, không gửi duyệt tay"
+            )
+        else:
+            logger.info(
+                f"[orchestrator] batdongsan/{listing.source_id}: bỏ cuộc sau {attempts} "
+                f"lần thử đọc số tin đăng — lưu DB, không alert, đưa vào hàng duyệt tay"
+            )
+            self._bds_review_batch.append(listing)
         try:
             data = listing.to_dict()
             data.update({

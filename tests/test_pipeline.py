@@ -1985,3 +1985,80 @@ def test_diem_signal_luon_la_so_nguyen_de_log_khong_no():
         assert "text_marketing_superlatives" in r.signals_fired, src
         assert all(type(v) is int for v in r.signals_fired.values()), r.signals_fired
         " ".join(f"{k}:{v:+d}" for k, v in r.signals_fired.items())  # đúng dòng log của orchestrator
+
+
+class TestBdsTinDangAnVaBadge:
+    """13/11/2026 tin pr46540707 (môi giới 108 tin, có badge) bị đẩy vào hàng
+    duyệt tay: link bị chuyển hướng về trang danh mục, bot đọc trang đó như
+    trang chi tiết, không thấy số tin đăng, hoãn 3 lần rồi bỏ cuộc."""
+
+    _TRANG_TIN = (
+        '<div class="re__ldp-agent-desc">Môi giới chuyên nghiệp</div>'
+        '<div class="agent-deail-infor"><span>Tin đăng đang có</span> <i>108</i></div>'
+    )
+
+    def _enrich(self, url_cuoi: str, html: str):
+        from scrapling.parser import Selector
+        from spiders.batdongsan import BatdongsanSpider
+
+        class _Page:
+            def __init__(self):
+                self._s = Selector(html)
+                self.url = url_cuoi
+                self.html_content = html
+            def css(self, q):
+                return self._s.css(q)
+
+        sp = BatdongsanSpider({"urls": ["https://batdongsan.com.vn/x"]})
+        async def fake_fetch(*a, **k):
+            return _Page()
+        sp._stealth_fetch = fake_fetch
+        l = make_listing(source="batdongsan", source_id="46540707", description="mô tả từ trang danh sách",
+                         source_url="https://batdongsan.com.vn/cho-thue-nha-rieng/abc-pr46540707")
+        asyncio.run(sp._enrich_from_detail(l, None))
+        return l, sp.cycle_health
+
+    def test_bi_chuyen_huong_la_tin_dang_an(self):
+        l, health = self._enrich("https://batdongsan.com.vn/cho-thue-nha-rieng",
+                                 "<html>trang danh mục, có Tin đăng đang có 5 ở tin khác</html>")
+        assert l.detail_hidden is True
+        assert l.poster_total_listings is None, "không được đọc số từ trang danh mục"
+        assert l.description == "mô tả từ trang danh sách", "không được lấy mô tả trang danh mục"
+        assert health.get("detail_hidden") == 1
+
+    def test_trang_tin_that_doc_duoc_so_va_badge(self):
+        l, _ = self._enrich("https://batdongsan.com.vn/cho-thue-nha-rieng/abc-pr46540707", self._TRANG_TIN)
+        assert l.detail_hidden is False
+        assert l.poster_total_listings == 108
+        assert l.has_pro_agent_badge is True
+
+    def _agent(self):
+        from orchestrator.agent import RealEstorkAgent
+        ag = RealEstorkAgent.__new__(RealEstorkAgent)
+        ag._bds_pending, ag._bds_review_batch, ag.saved = {}, [], []
+        ag.db = type("D", (), {"upsert_listing": lambda s, d: ag.saved.append(d) or True,
+                               "get_listing_status": lambda s, *a: None})()
+        return ag
+
+    def test_van_an_khi_bo_cuoc_thi_khong_gui_duyet_tay(self):
+        from orchestrator.agent import _BDS_MAX_VERIFY_ATTEMPTS
+        ag = self._agent()
+        l = make_listing(source="batdongsan", source_id="1")
+        l.detail_hidden = True
+        ag._queue_bds_pending(l, _BDS_MAX_VERIFY_ATTEMPTS - 1)
+        assert ag._bds_review_batch == [] and ag.saved[0]["status"] == "unverified_poster"
+
+    def test_khong_an_ma_van_thieu_so_thi_van_gui_duyet_tay(self):
+        from orchestrator.agent import _BDS_MAX_VERIFY_ATTEMPTS
+        ag = self._agent()
+        l = make_listing(source="batdongsan", source_id="2")
+        ag._queue_bds_pending(l, _BDS_MAX_VERIFY_ATTEMPTS - 1)
+        assert ag._bds_review_batch == [l]
+
+    def test_co_badge_thi_loai_moi_gioi_du_chua_biet_so_tin(self):
+        ag = self._agent()
+        l = make_listing(source="batdongsan", source_id="3")
+        l.poster_total_listings = None
+        l.has_pro_agent_badge = True
+        assert asyncio.run(ag._process_listing(l)) == "veto_broker"
+        assert ag.saved[0]["status"] == "auto_vetoed_broker"
