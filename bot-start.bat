@@ -16,6 +16,13 @@ if not exist "venv\Scripts\python.exe" (
     exit /b 1
 )
 
+REM Dang co bot chay (thuong la ban headless tu khoi dong) -> hoi truoc khi chay de.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\bot-guard.ps1" -Mode visible
+if errorlevel 1 (
+    pause
+    exit /b 0
+)
+
 echo ============================================================
 echo  RealEstork Bot dang khoi dong... ^(Ctrl+C de dung^)
 echo  Log day du: logs\orchestrator.log

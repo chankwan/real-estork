@@ -16,6 +16,13 @@ if not exist "venv\Scripts\pythonw.exe" (
     exit /b 1
 )
 
+REM Dang co bot chay -> hoi truoc khi chay de (tranh 2 bot song song).
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\bot-guard.ps1" -Mode headless
+if errorlevel 1 (
+    pause
+    exit /b 0
+)
+
 echo Khoi dong bot HEADLESS ^(khong cua so^)...
 start "" "%~dp0venv\Scripts\pythonw.exe" -X utf8 -m cli.main start --source manual-headless
 

@@ -35,9 +35,23 @@ load_dotenv()
 
 
 def _pid_alive(pid: int) -> bool:
-    """Cross-platform check if PID is alive. No external deps."""
+    """PID còn sống VÀ đúng là một process Python (bot), không cần thư viện ngoài.
+
+    Windows KHÔNG dùng được os.kill(pid, 0): ở đó tín hiệu 0 là CTRL_C_EVENT,
+    Python gọi GenerateConsoleCtrlEvent. Process không có console (pythonw —
+    đúng kiểu bot headless) gọi hàm này luôn lỗi WinError 6 → bị hiểu là "PID
+    đã chết". 13/11/2026 09:06 bấm start tay → bot mới phán bot cũ (đang chạy
+    khoẻ 2 ngày) là đã chết, dọn lock, chạy song song 14 tiếng: cào đôi, tranh
+    nhau nút 👍/👎, một tin batdongsan bị đẩy vào hàng duyệt tay hai lần.
+
+    Kiểm thêm tên chương trình: sau mất điện, PID ghi trong lock cũ có thể đã
+    được Windows cấp lại cho một process khác. Chỉ kiểm "còn sống" thì bot sẽ
+    tưởng bản cũ còn chạy và không chịu khởi động nữa.
+    """
     if pid <= 0:
         return False
+    if os.name == "nt":
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -47,6 +61,36 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        # Không có process, hoặc bị từ chối quyền = process của user khác/hệ
+        # thống. Bot chạy cùng user nên cả hai đều nghĩa là "không phải bot".
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return False
+        if code.value != STILL_ACTIVE:
+            return False
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(len(buf))
+        if not kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            # Sống nhưng không đọc được tên — nghiêng về "còn chạy" để không
+            # sinh bot thứ hai; trường hợp này không gặp với process cùng user.
+            return True
+        return os.path.basename(buf.value).lower().startswith("python")
+    finally:
+        kernel32.CloseHandle(h)
 
 
 def _doc_thoi_diem(raw: Any) -> datetime | None:
