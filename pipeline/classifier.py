@@ -191,6 +191,10 @@ class ClassificationPipeline:
                 contribution = weight
             else:
                 contribution = 0
+            # Điểm từng signal luôn là số nguyên. Mức 0.5 của marketing ra số lẻ
+            # (vd -10.0) và dòng log `{v:+d}` nổ "Unknown format code 'd'" → cả
+            # tin bị bỏ, không lưu, không gửi: 63 tin rơi từ 06/11 tới 14/11/2026.
+            contribution = round(contribution)
 
             if contribution != 0:
                 signals_fired[signal_name] = contribution

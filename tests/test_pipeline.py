@@ -1975,3 +1975,13 @@ class TestDocNextDataHaiCho:
         assert _classified({"props": {"pageProps": {"classified": {"items": [1]}}}}) == {"items": [1]}
         assert _classified({"props": {"classified": {"items": [2]}}}) == {"items": [2]}
         assert _classified({}) == {}
+
+
+def test_diem_signal_luon_la_so_nguyen_de_log_khong_no():
+    """Mức 0.5 của marketing từng ra -10.0 → log `{v:+d}` nổ → tin bị bỏ (63 tin)."""
+    from pipeline.classifier import ClassificationPipeline
+    for src in ("nhatot", "muaban", "batdongsan"):
+        r = ClassificationPipeline().classify(make_listing(source=src, description="Nhà vị trí đắc địa"))
+        assert "text_marketing_superlatives" in r.signals_fired, src
+        assert all(type(v) is int for v in r.signals_fired.values()), r.signals_fired
+        " ".join(f"{k}:{v:+d}" for k, v in r.signals_fired.items())  # đúng dòng log của orchestrator
