@@ -2062,3 +2062,74 @@ class TestBdsTinDangAnVaBadge:
         l.has_pro_agent_badge = True
         assert asyncio.run(ag._process_listing(l)) == "veto_broker"
         assert ag.saved[0]["status"] == "auto_vetoed_broker"
+
+
+class TestAiTuNgatKhiMatKetNoi:
+    """11-14/11/2026 PC3 (proxy AI) tắt 3 ngày: mỗi tin chờ ~20s mới bỏ qua AI."""
+
+    def _gw(self, monkeypatch, loi):
+        import httpx
+        import pipeline.ai as ai
+        gw = ai.AIGateway()
+        gw.provider = "zero-token"
+        gw.goi = 0
+        async def fake(prompt, is_zero_token=False):
+            gw.goi += 1
+            if loi is not None:
+                raise loi
+            return {"is_owner_probability": 0.8}
+        gw._call_openai_compatible = fake
+        gw._clock = [1000.0]
+        monkeypatch.setattr(ai.time, "monotonic", lambda: gw._clock[0])
+        return gw
+
+    def test_ngat_sau_3_loi_ket_noi_roi_thu_lai_sau_10_phut(self, monkeypatch):
+        import httpx
+        gw = self._gw(monkeypatch, httpx.ConnectError("All connection attempts failed"))
+        l = make_listing()
+        for _ in range(5):
+            assert asyncio.run(gw.analyze_listing(l)) is None
+        assert gw.goi == 3 and gw.dang_ngat, "lỗi thứ 3 → ngắt, 2 tin sau không gọi nữa"
+        gw._clock[0] += 10 * 60 + 1
+        async def ok(prompt, is_zero_token=False):
+            gw.goi += 1
+            return {"is_owner_probability": 0.8}
+        gw._call_openai_compatible = ok
+        assert asyncio.run(gw.analyze_listing(l)) == {"is_owner_probability": 0.8}
+        assert gw.goi == 4 and not gw.dang_ngat and gw.mat_ket_noi_tu is None
+
+    def test_loi_khong_phai_ket_noi_thi_khong_ngat(self, monkeypatch):
+        gw = self._gw(monkeypatch, ValueError("JSON hỏng"))
+        for _ in range(5):
+            asyncio.run(gw.analyze_listing(make_listing()))
+        assert gw.goi == 5 and not gw.dang_ngat
+
+    def test_bao_admin_mot_lan_khi_mat_va_mot_lan_khi_noi_lai(self):
+        import time as _t
+        from orchestrator.agent import RealEstorkAgent
+        ag = RealEstorkAgent.__new__(RealEstorkAgent)
+        ag._ai_mat_ket_noi_da_bao = False
+        tin = []
+        class _T:
+            async def send_admin(self, m): tin.append(m)
+        ag.telegram = _T()
+        ag.ai = type("A", (), {"mat_ket_noi_tu": _t.time() - 3600, "dang_ngat": True,
+                               "loi_cuoi": "ConnectError: All connection attempts failed"})()
+        asyncio.run(ag.check_ai_connection()); asyncio.run(ag.check_ai_connection())
+        assert len(tin) == 1 and "AI mất kết nối" in tin[0]
+        ag.ai.mat_ket_noi_tu, ag.ai.dang_ngat = None, False
+        asyncio.run(ag.check_ai_connection()); asyncio.run(ag.check_ai_connection())
+        assert len(tin) == 2 and "kết nối lại" in tin[1]
+
+    def test_mot_loi_le_khong_bao_admin(self):
+        import time as _t
+        from orchestrator.agent import RealEstorkAgent
+        ag = RealEstorkAgent.__new__(RealEstorkAgent)
+        ag._ai_mat_ket_noi_da_bao = False
+        tin = []
+        class _T:
+            async def send_admin(self, m): tin.append(m)
+        ag.telegram = _T()
+        ag.ai = type("A", (), {"mat_ket_noi_tu": _t.time() - 900, "dang_ngat": False, "loi_cuoi": ""})()
+        asyncio.run(ag.check_ai_connection())
+        assert tin == []

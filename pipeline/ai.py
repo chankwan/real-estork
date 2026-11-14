@@ -10,9 +10,17 @@ import os
 import re
 from typing import Any
 
+import time
+
 import httpx
 import yaml
 from loguru import logger
+
+# Tự ngắt khi proxy AI mất kết nối. 11-14/11/2026 PC3 (máy chạy proxy) tắt 3
+# ngày: mỗi tin chờ ~20s mới bỏ qua AI, cycle 182 tin nhatot kéo ~1 tiếng.
+# Lỗi kết nối liên tiếp chạm ngưỡng → bỏ qua AI một quãng rồi thử lại 1 tin.
+_NGAT_SAU_SO_LOI = 3
+_NGAT_TRONG_GIAY = 10 * 60
 
 
 class AIGateway:
@@ -23,6 +31,10 @@ class AIGateway:
 
     def __init__(self, config_path: str = "config/ai.yaml") -> None:
         self._load_config(config_path)
+        self._loi_ket_noi_lien_tiep = 0
+        self._ngat_den = 0.0                      # time.monotonic(); 0 = không ngắt
+        self.mat_ket_noi_tu: float | None = None  # time.time() lỗi đầu chuỗi; None = ổn
+        self.loi_cuoi = ""
 
     @staticmethod
     def _giai_bien(gia_tri: Any) -> Any:
@@ -93,20 +105,50 @@ class AIGateway:
             source=listing.source,
         )
 
+        if time.monotonic() < self._ngat_den:
+            return None
+
         try:
             if self.provider == "ollama":
-                return await self._call_ollama(prompt)
+                ket_qua = await self._call_ollama(prompt)
             elif self.provider == "zero-token":
-                return await self._call_openai_compatible(prompt, is_zero_token=True)
+                ket_qua = await self._call_openai_compatible(prompt, is_zero_token=True)
             elif self.provider in ("anthropic", "openai"):
-                return await self._call_openai_compatible(prompt)
+                ket_qua = await self._call_openai_compatible(prompt)
             else:
                 return None
         except Exception as e:
             logger.error(f"[ai] {self.provider} call failed: {e}")
+            # Chỉ lỗi tầng kết nối mới tính: proxy trả lời sai định dạng là
+            # chuyện khác, ngắt đi cũng không giúp gì.
+            if isinstance(e, httpx.TransportError):
+                self._ghi_loi_ket_noi(e)
             if self.fallback:
                 return None
             raise
+
+        if self.mat_ket_noi_tu is not None:
+            logger.info("[ai] proxy trả lời lại — bỏ ngắt")
+        self._loi_ket_noi_lien_tiep = 0
+        self.mat_ket_noi_tu = None
+        return ket_qua
+
+    @property
+    def dang_ngat(self) -> bool:
+        """Đã đủ lỗi kết nối liên tiếp để ngắt — một lỗi lẻ không tính."""
+        return self._loi_ket_noi_lien_tiep >= _NGAT_SAU_SO_LOI
+
+    def _ghi_loi_ket_noi(self, e: Exception) -> None:
+        self._loi_ket_noi_lien_tiep += 1
+        self.loi_cuoi = f"{type(e).__name__}: {e}"
+        if self.mat_ket_noi_tu is None:
+            self.mat_ket_noi_tu = time.time()
+        if self._loi_ket_noi_lien_tiep >= _NGAT_SAU_SO_LOI:
+            self._ngat_den = time.monotonic() + _NGAT_TRONG_GIAY
+            logger.warning(
+                f"[ai] {self._loi_ket_noi_lien_tiep} lỗi kết nối liên tiếp — bỏ qua AI "
+                f"{_NGAT_TRONG_GIAY // 60} phút rồi thử lại 1 tin"
+            )
 
     async def _call_ollama(self, prompt: str) -> dict[str, Any] | None:
         """Call local Ollama /api/generate endpoint."""

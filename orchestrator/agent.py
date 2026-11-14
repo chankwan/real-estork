@@ -326,6 +326,7 @@ class RealEstorkAgent:
         # sống, 2 nguồn kia vẫn chạy, mọi chuông hiện có đều thấy "bình thường".
         self._source_last_ok: dict[str, float] = {}
         self._silence_alerted: set[str] = set()
+        self._ai_mat_ket_noi_da_bao = False
         # Spiders can run concurrently using ThreadPoolExecutor and scrapling StealthyFetcher.
 
         # Load schedule config
@@ -1100,6 +1101,30 @@ class RealEstorkAgent:
             out[source] = max(phut * 4 * 60, 30 * 60)
         return out
 
+    async def check_ai_connection(self) -> None:
+        """Proxy AI mất kết nối → nhắn admin 1 lần; nối lại → báo đã ổn.
+
+        AI đang chạy thử (trọng số 0) nên mất AI không đổi điểm, chỉ mất ý kiến
+        lưu DB. Ca 11-14/11/2026: PC3 tắt 3 ngày, không ai biết cho tới khi
+        soi log vì chuyện khác.
+        """
+        tu = self.ai.mat_ket_noi_tu
+        if tu is None or not self.ai.dang_ngat:
+            if self._ai_mat_ket_noi_da_bao:
+                self._ai_mat_ket_noi_da_bao = False
+                await self.telegram.send_admin("✅ <b>AI kết nối lại rồi</b> — proxy đã trả lời.")
+            return
+        if self._ai_mat_ket_noi_da_bao:
+            return
+        self._ai_mat_ket_noi_da_bao = True
+        await self.telegram.send_admin(
+            f"🤖 <b>AI mất kết nối {_format_uptime(time.time() - tu)}</b>\n"
+            f"Lỗi: {self.ai.loi_cuoi[:200]}\n"
+            f"Bot bỏ qua AI, cứ 10 phút thử lại 1 lần. Điểm chấm KHÔNG đổi (AI đang "
+            f"chạy thử, trọng số 0).\n"
+            f"→ Kiểm tra máy chạy proxy (PC3) còn bật và còn Tailscale không."
+        )
+
     async def check_source_silence(self) -> None:
         """Nguồn nào quá lâu không chạy xong cycle nào → nhắn Telegram admin.
 
@@ -1745,6 +1770,7 @@ class RealEstorkAgent:
             "cleanup_old_phone_data": self.cleanup_old_phone_data,
             "check_write_health": self.check_write_health,
             "check_source_silence": self.check_source_silence,
+            "check_ai_connection": self.check_ai_connection,
         }
 
         for job_name, job_config in schedules.items():

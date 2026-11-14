@@ -56,3 +56,8 @@ schedules:
     interval_minutes: 10         # Nguồn nào im lặng quá lâu thì kêu.
     function: check_source_silence  # Bắt ca nhatot treo 8h (14/09) mà không ai biết.
     enabled: true
+
+  check_ai_connection:
+    interval_minutes: 10         # Proxy AI (PC3) mất kết nối thì báo admin 1 lần.
+    function: check_ai_connection   # Ca 11-14/11: PC3 tắt 3 ngày không ai biết.
+    enabled: true
